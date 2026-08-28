@@ -1,5 +1,10 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 export type MessageRole = "user" | "assistant";
 
 export interface Agent {
@@ -8,6 +13,7 @@ export interface Agent {
   description: string;
   instructions: string;
   status: AgentStatus;
+  ownerId?: string;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -54,6 +60,7 @@ export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  ownerId?: string | undefined;
 }
 
 export interface UpdateAgentInput {

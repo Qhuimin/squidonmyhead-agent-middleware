@@ -7,6 +7,11 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import {
+  extractUserContext,
+  filterAgentsByOwner,
+  assertAgentOwnership,
+} from "./middleware/identity/index.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -15,10 +20,12 @@ const createAgentBody = z.object({
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
 });
-const updateAgentBody = createAgentBody.partial().refine(
-  (value) => Object.keys(value).length > 0,
-  "At least one field is required",
-);
+const updateAgentBody = createAgentBody
+  .partial()
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    "At least one field is required",
+  );
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
@@ -72,60 +79,102 @@ export async function createApp(
 
   app.get("/api/system", async () => service.systemInfo());
 
-  app.get("/api/agents", async () => ({ agents: service.listAgents() }));
+  // extract current user from incoming req header using extractUserContext(request).
+  // filtered list using filterAgentsByOwner(...) so users only see agents they own.
+  app.get("/api/agents", async (request) => {
+    const user = extractUserContext(request);
+    const allAgents = service.listAgents();
+    return { agents: filterAgentsByOwner(allAgents, user.userId) };
+  });
 
+  // injected ownerId: user:userId into the payload sent to service.createAgent(...) so new agents are linked to their creator.
   app.post("/api/agents", async (request, reply) => {
+    const user = extractUserContext(request);
     const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(body);
+    const agent = await service.createAgent({
+      ...body,
+      ownerId: user.userId,
+    });
     return reply.code(201).send({ agent });
   });
 
+  // when interacting with a specific agent by id, check if current user is the owner.
+  // if false, assertAgentOwnership throws a 403 Forbidden error and halts the request.
+
   app.get("/api/agents/:id", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
-    return { agent: service.getAgent(id) };
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
+    return { agent };
   });
 
   app.patch("/api/agents/:id", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     const body = updateAgentBody.parse(request.body);
     return { agent: await service.updateAgent(id, body) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     return service.deleteAgent(id);
   });
 
   app.post("/api/agents/:id/start", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     return { agent: await service.startAgent(id) };
   });
 
   app.post("/api/agents/:id/stop", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     return { agent: await service.stopAgent(id) };
   });
 
   app.get("/api/agents/:id/messages", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     return { messages: service.getMessages(id) };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     return { runs: service.getRuns(id) };
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
+    const user = extractUserContext(request);
     const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
     const body = messageBody.parse(request.body);
     const result = await service.sendMessage(id, body.content);
     return reply.code(202).send(result);
   });
 
   app.get("/api/runs/:id", async (request) => {
+    const user = extractUserContext(request);
     const { id } = runIdParams.parse(request.params);
-    return { run: service.getRun(id) };
+    const run = service.getRun(id);
+    const agent = service.getAgent(run.agentId);
+    assertAgentOwnership(agent, user.userId);
+    return { run };
   });
 
   if (config.nodeEnv === "production") {

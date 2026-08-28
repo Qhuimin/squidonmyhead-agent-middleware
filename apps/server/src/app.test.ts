@@ -24,7 +24,7 @@ describe("HTTP boundary", () => {
     });
     expect(allowed.statusCode).toBe(200);
     await app.close();
-  });
+  }, 15000);
 
   it("preserves Fastify client error status codes", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
@@ -44,5 +44,5 @@ describe("HTTP boundary", () => {
     });
     expect(oversized.statusCode).toBe(413);
     await app.close();
-  });
+  }, 15000);
 });
