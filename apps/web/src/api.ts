@@ -11,6 +11,16 @@ export class ApiError extends Error {
 
 let authToken = "";
 
+let currentUserId = "alice";
+
+export function setActiveUserId(userId: string): void {
+  currentUserId = userId.trim().toLowerCase();
+}
+
+export function getActiveUserId(): string {
+  return currentUserId;
+}
+
 export function setAuthToken(token: string): void {
   authToken = token.trim();
 }
@@ -19,13 +29,16 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = {
     ...(options?.body ? { "Content-Type": "application/json" } : {}),
     ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+    "x-user-id": currentUserId,
     ...options?.headers,
   };
   const response = await fetch(url, {
     ...options,
     headers,
   });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  const data = (await response.json().catch(() => ({}))) as T & {
+    error?: string;
+  };
   if (!response.ok) {
     throw new ApiError(data.error ?? "Request failed", response.status);
   }
