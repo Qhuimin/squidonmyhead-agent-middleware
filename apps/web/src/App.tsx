@@ -8,6 +8,17 @@ import {
 } from "./api";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 import { describeDetectedTypes, detectSecrets, redactSecrets } from "../../server/src/middleware/safety/secret-detector";
+import {
+  MAX_RUN_DURATION_MS,
+  MAX_TOKEN_BUDGET,
+  formatDuration,
+  isOverDurationLimit,
+  isOverTokenBudget,
+  isNearingLimit,
+  totalTokens,
+  GLOBAL_TOKEN_BUDGET,
+  WARNING_THRESHOLD_RATIO,
+} from "../../server/src/middleware/safety/run-limits";
 
 const MOCK_USERS = [
   { id: "alice", label: "Alice (Developer)" },
@@ -67,6 +78,10 @@ export default function App() {
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(null);
+  const [runElapsedMs, setRunElapsedMs] = useState(0);
+  const [runTokenUsage, setRunTokenUsage] = useState<Record<string, number>>({});
+
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -94,6 +109,20 @@ export default function App() {
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
+
+  const haltAll = async () => {
+    const busyAgents = agents.filter((agent) => agent.status === "busy");
+    if (busyAgents.length === 0) return;
+    setBusy(true);
+    try {
+      await Promise.all(busyAgents.map((agent) => api.stopAgent(agent.id).catch(() => { })));
+      await refreshAgents();
+      setActiveRun(null);
+      setError("Halted " + busyAgents.length + " running agent(s).");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -149,7 +178,43 @@ export default function App() {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
 
-  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(null);
+  // Timer effect — ticks while a run is active, resets when it isn't, and auto-stops on timeout
+  useEffect(() => {
+    const isActive = activeRun?.status === "queued" || activeRun?.status === "running";
+    if (!isActive || !activeRun) {
+      setRunElapsedMs(0);
+      return;
+    }
+    const startedAt = Date.parse(activeRun.createdAt);
+    const tick = () => {
+      const elapsed = Date.now() - startedAt;
+      setRunElapsedMs(elapsed);
+      if (isOverDurationLimit(elapsed) && selected) {
+        setError("Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped automatically.");
+        api.stopAgent(selected.id).catch(() => { });
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [activeRun, selected]);
+
+  // Token-budget check the moment activeRun updates with new usage data
+  useEffect(() => {
+    if (activeRun && isOverTokenBudget(activeRun.usage) && selected) {
+      setError("Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped automatically.");
+      api.stopAgent(selected.id).catch(() => { });
+    }
+  }, [activeRun, selected]);
+
+
+  useEffect(() => {
+    if (activeRun) {
+      setRunTokenUsage((prev) => ({ ...prev, [activeRun.id]: totalTokens(activeRun.usage) }));
+    }
+  }, [activeRun]);
+
+  const globalTokensUsed = Object.values(runTokenUsage).reduce((sum, n) => sum + n, 0);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -471,6 +536,45 @@ export default function App() {
       </aside>
 
       <main className="main">
+
+        {/* Loading style bar to show remaining tokens shared by all agents */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4, color: "#4a5568" }}>
+              <span>Shared token pool</span>
+              <span>{globalTokensUsed.toLocaleString()} / {GLOBAL_TOKEN_BUDGET.toLocaleString()}</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 4, background: "#dde1e6", overflow: "hidden" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: Math.min(100, (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100) + "%",
+                  background: globalTokensUsed / GLOBAL_TOKEN_BUDGET >= WARNING_THRESHOLD_RATIO ? "#dc2626" : "#4a5568",
+                  transition: "width 0.3s",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Big red button to stop ALL AGENTS from processing */}
+          <button
+            type="button"
+            onClick={haltAll}
+            style={{
+              flexShrink: 0,
+              background: "#dc2626",
+              color: "white",
+              border: 0,
+              borderRadius: 8,
+              padding: "8px 16px",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Halt All Agents
+          </button>
+        </div>
+
         {!system?.arkConfigured || !system?.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
@@ -644,6 +748,22 @@ export default function App() {
                         <Spinner />
                         Codex is reading, editing, or running commands…
                       </div>
+
+                      {/* Tracking elapsed time and token usage */}
+                      <div
+                        className="error-banner"
+                        style={{
+                          marginTop: 8,
+                          color: isNearingLimit(runElapsedMs, activeRun.usage) ? "#a13f3f" : "#4a5568",
+                          background: isNearingLimit(runElapsedMs, activeRun.usage) ? "#fae8e6" : "#f1f3f5",
+                          border: isNearingLimit(runElapsedMs, activeRun.usage) ? "1px solid #edc4c0" : "1px solid #dde1e6",
+                        }}
+                      >
+                        <span>
+                          {formatDuration(runElapsedMs)} / {formatDuration(MAX_RUN_DURATION_MS)} · {totalTokens(activeRun.usage).toLocaleString()} / {MAX_TOKEN_BUDGET.toLocaleString()} tokens
+                        </span>
+                      </div>
+
                     </article>
                   )}
                 {activeRun?.status === "failed" && (
