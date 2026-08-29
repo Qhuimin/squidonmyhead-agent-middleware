@@ -19,6 +19,7 @@ import {
   GLOBAL_TOKEN_BUDGET,
   WARNING_THRESHOLD_RATIO,
 } from "../../server/src/middleware/safety/run-limits";
+import { confirmStop, confirmStopAll } from "./confirm-stop";
 
 const MOCK_USERS = [
   { id: "alice", label: "Alice (Developer)" },
@@ -115,10 +116,20 @@ export default function App() {
     if (busyAgents.length === 0) return;
     setBusy(true);
     try {
-      await Promise.all(busyAgents.map((agent) => api.stopAgent(agent.id).catch(() => { })));
+      const results = await confirmStopAll(busyAgents.map((agent) => agent.id));
+      const confirmed = results.filter((result) => result.confirmed);
+      const failed = results.filter((result) => !result.confirmed);
       await refreshAgents();
       setActiveRun(null);
-      setError("Halted " + busyAgents.length + " running agent(s).");
+      if (failed.length === 0) {
+        setError("Halted " + confirmed.length + " agent(s), confirmed stopped.");
+      } else {
+        setError(
+          "Halted " + confirmed.length + " of " + results.length +
+          " agent(s). " + failed.length + " could not be confirmed stopped — check manually: " +
+          failed.map((f) => f.agentId).join(", "),
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -190,8 +201,19 @@ export default function App() {
       const elapsed = Date.now() - startedAt;
       setRunElapsedMs(elapsed);
       if (isOverDurationLimit(elapsed) && selected) {
-        setError("Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped automatically.");
-        api.stopAgent(selected.id).catch(() => { });
+        const agentId = selected.id;
+        confirmStop(agentId).then((result) => {
+          if (result.confirmed) {
+            setError("Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped.");
+          } else {
+            setError(
+              "Run exceeded the time limit, but the stop could not be confirmed (" +
+              (result.lastError ?? "unknown error") +
+              "). The agent may still be running — check manually.",
+            );
+          }
+          refreshAgents();
+        });
       }
     };
     tick();
@@ -202,11 +224,21 @@ export default function App() {
   // Token-budget check the moment activeRun updates with new usage data
   useEffect(() => {
     if (activeRun && isOverTokenBudget(activeRun.usage) && selected) {
-      setError("Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped automatically.");
-      api.stopAgent(selected.id).catch(() => { });
+      const agentId = selected.id;
+      confirmStop(agentId).then((result) => {
+        if (result.confirmed) {
+          setError("Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped.");
+        } else {
+          setError(
+            "Run exceeded the token budget, but the stop could not be confirmed (" +
+            (result.lastError ?? "unknown error") +
+            "). The agent may still be running — check manually.",
+          );
+        }
+        refreshAgents();
+      });
     }
   }, [activeRun, selected]);
-
 
   useEffect(() => {
     if (activeRun) {
