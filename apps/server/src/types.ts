@@ -1,3 +1,11 @@
+export type AgentScope = "fs:read" | "fs:write" | "cmd:exec" | "net:outbound";
+
+export const DEFAULT_AGENT_SCOPES: AgentScope[] = [
+  "fs:read",
+  "fs:write",
+  "cmd:exec",
+];
+
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus =
   | "queued"
@@ -14,6 +22,8 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   ownerId?: string;
+  allowedScopes: AgentScope[];
+  isRevoked?: boolean;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -61,12 +71,15 @@ export interface CreateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   ownerId?: string | undefined;
+  allowedScopes?: AgentScope[] | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  allowedScopes?: AgentScope[] | undefined;
+  isRevoked?: boolean | undefined;
 }
 
 export interface RunnerResult {

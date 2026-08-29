@@ -3,15 +3,20 @@ import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
-import type {
-  Agent,
-  AgentRun,
-  AgentRunner,
-  CreateAgentInput,
-  Message,
-  UpdateAgentInput,
+import {
+  type Agent,
+  type AgentRun,
+  type AgentRunner,
+  type CreateAgentInput,
+  DEFAULT_AGENT_SCOPES,
+  type Message,
+  type UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import {
+  assertAgentPermission,
+  requiresCommandExecution,
+} from "./middleware/identity/index.js";
 
 const now = () => new Date().toISOString();
 
@@ -72,6 +77,8 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
       ownerId: input.ownerId ?? "alice",
+      allowedScopes: input.allowedScopes ?? [...DEFAULT_AGENT_SCOPES],
+      isRevoked: false,
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
       lastError: null,
@@ -104,6 +111,10 @@ export class AgentService {
         agent.description = input.description.trim();
       if (input.instructions !== undefined)
         agent.instructions = input.instructions.trim();
+      if (input.allowedScopes !== undefined)
+        agent.allowedScopes = input.allowedScopes;
+      if (input.isRevoked !== undefined) agent.isRevoked = input.isRevoked;
+
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -170,6 +181,15 @@ export class AgentService {
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
     }
+
+    // 1. Validate agent permission and revocation state before starting run
+    const agentSnapshot = this.getAgent(agentId);
+    assertAgentPermission(agentSnapshot, "fs:read");
+
+    if (requiresCommandExecution(prompt)) {
+      assertAgentPermission(agentSnapshot, "cmd:exec");
+    }
+
     const timestamp = now();
     const runId = randomUUID();
     const run: AgentRun = {
