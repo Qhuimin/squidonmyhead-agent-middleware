@@ -252,9 +252,18 @@ export default function App() {
     event.preventDefault();
     const secretMatches = detectSecrets(form.instructions + " " + form.description);
     if (secretMatches.length > 0) {
-      setInstructionsWarning(
-        "Contains what looks like a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
+      setError(
+        "Instructions/description appear to contain a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
       );
+      api.logAuditEvent({
+        type: "secret_detected_blocked",
+        field: "instructions",
+        agentId: selected?.id ?? null,
+        detectedTypes: secretMatches.map((m) => m.label),
+        timestamp: new Date().toISOString(),
+      }).catch(() => {
+        setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
+      });
       return;
     }
     setInstructionsWarning(null);
@@ -280,10 +289,17 @@ export default function App() {
     const secretMatches = detectSecrets(form.instructions + " " + form.description);
     if (secretMatches.length > 0) {
       setError(
-        "Instructions/description appear to contain a secret (" +
-        describeDetectedTypes(secretMatches) +
-        "). Remove it before saving.",
+        "Instructions/description appear to contain a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
       );
+      api.logAuditEvent({
+        type: "secret_detected_blocked",
+        field: "instructions",
+        agentId: selected?.id ?? null,
+        detectedTypes: secretMatches.map((m) => m.label),
+        timestamp: new Date().toISOString(),
+      }).catch(() => {
+        setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
+      });
       return;
     }
     setBusy(true);
@@ -374,10 +390,17 @@ export default function App() {
     const secretMatches = detectSecrets(content);
     if (secretMatches.length > 0) {
       setError(
-        "Message appears to contain a secret (" +
-        describeDetectedTypes(secretMatches) +
-        "). Remove it before sending.",
+        "Instructions/description appear to contain a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
       );
+      api.logAuditEvent({
+        type: "secret_detected_blocked",
+        field: "instructions",
+        agentId: selected?.id ?? null,
+        detectedTypes: secretMatches.map((m) => m.label),
+        timestamp: new Date().toISOString(),
+      }).catch(() => {
+        setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
+      });
       return;
     }
     setPrompt("");
