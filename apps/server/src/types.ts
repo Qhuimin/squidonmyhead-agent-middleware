@@ -87,3 +87,11 @@ export interface AgentRunner {
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
+
+export interface AuditEvent {
+  type: "secret_detected_blocked";
+  field: "instructions" | "description" | "message";
+  agentId: string | null;
+  detectedTypes: string[];
+  timestamp: string;
+}

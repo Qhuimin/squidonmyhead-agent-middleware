@@ -1,3 +1,4 @@
+import { AuditEvent } from "../../server/src/types";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 
 export class ApiError extends Error {
@@ -91,4 +92,11 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+
+  logAuditEvent: (event: AuditEvent) =>
+    request<{ ok: boolean }>("/api/audit", {
+      method: "POST",
+      body: JSON.stringify(event),
+    }),
+
 };

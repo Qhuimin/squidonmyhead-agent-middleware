@@ -12,6 +12,9 @@ import {
   filterAgentsByOwner,
   assertAgentOwnership,
 } from "./middleware/identity/index.js";
+import { appendAuditLog, AUDIT_DATA_DIR, auditEventBody } from "./audit-service.js";
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -213,6 +216,23 @@ export async function createApp(
       error: appError.message,
       ...(validationError ? { details: error.issues } : {}),
     });
+  });
+
+  app.post("/api/audit", async (request, reply) => {
+    const parseResult = auditEventBody.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({ ok: false, error: "Invalid audit event shape" });
+    }
+    try {
+      await appendAuditLog(parseResult.data);
+      return reply.send({ ok: true });
+    } catch (reason) {
+      return reply.status(500).send({ ok: false, error: "Failed to record audit event" });
+    }
+  });
+
+  app.addHook("onReady", async () => {
+    await mkdir(AUDIT_DATA_DIR, { recursive: true });
   });
 
   return app;
