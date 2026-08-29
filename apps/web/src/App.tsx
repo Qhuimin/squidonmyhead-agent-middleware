@@ -630,8 +630,7 @@ export default function App() {
                         </strong>
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
-                      <div className="message-body">{message.content}</div>
-                    </article>
+                      <div className="message-body">{redactSecrets(message.content)}</div>                    </article>
                   ))
                 )}
                 {activeRun &&
@@ -650,7 +649,7 @@ export default function App() {
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
-                    <span>{activeRun.error}</span>
+                    <span>{redactSecrets(activeRun.error ?? "")}</span>
                   </article>
                 )}
                 <div ref={messageEnd} />
