@@ -1,4 +1,4 @@
-import { AuditEvent } from "../../server/src/types";
+import { AuditEvent, CreateAgentInput, UpdateAgentInput } from "./types";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 
 export class ApiError extends Error {
@@ -50,22 +50,19 @@ export const api = {
   auth: () => request<{ required: boolean }>("/api/auth"),
   system: () => request<SystemInfo>("/api/system"),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
-  createAgent: (body: {
-    name: string;
-    description: string;
-    instructions: string;
-  }) =>
+  createAgent: (body: CreateAgentInput) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateAgent: (
-    id: string,
-    body: { name: string; description: string; instructions: string },
-  ) =>
+  updateAgent: (id: string, body: UpdateAgentInput) =>
     request<{ agent: Agent }>("/api/agents/" + id, {
       method: "PATCH",
       body: JSON.stringify(body),
+    }),
+  revokeAgent: (id: string) =>
+    request<{ agent: Agent }>("/api/agents/" + id + "/revoke", {
+      method: "POST",
     }),
   deleteAgent: (id: string) =>
     request<{ archivedWorkspace: string }>("/api/agents/" + id, {
@@ -98,5 +95,4 @@ export const api = {
       method: "POST",
       body: JSON.stringify(event),
     }),
-
 };
