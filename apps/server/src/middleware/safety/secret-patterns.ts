@@ -4,6 +4,7 @@ export interface SecretPattern {
   pattern: RegExp;
 }
 
+const TEST_PASSWORD_PATTERN = /PASSWORD/gi;
 const AWS_ACCESS_KEY_ID_PATTERN = /\b(AKIA|ASIA)[0-9A-Z]{16}\b/g;
 const AWS_SECRET_KEY_PATTERN = /\b(?:aws_secret_access_key|secretAccessKey)\s*[:=]\s*['"][A-Za-z0-9/+=]{40}['"]/gi;
 const GITHUB_TOKEN_PATTERN = /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g;
@@ -16,6 +17,7 @@ const GENERIC_ASSIGNMENT_PATTERN =
   /\b(api[_-]?key|apikey|secret|token|password|passwd|access[_-]?key)\s*[:=]\s*['"]?[A-Za-z0-9/+_.-]{12,}['"]?/gi;
 
 export const SECRET_PATTERNS: SecretPattern[] = [
+  { id: "test-password", label: "Test: password", pattern: TEST_PASSWORD_PATTERN },
   { id: "aws-access-key-id", label: "AWS access key ID", pattern: AWS_ACCESS_KEY_ID_PATTERN },
   { id: "aws-secret-key", label: "AWS secret access key", pattern: AWS_SECRET_KEY_PATTERN },
   { id: "github-token", label: "GitHub token", pattern: GITHUB_TOKEN_PATTERN },

@@ -149,19 +149,18 @@ export default function App() {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
 
+  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(null);
+
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
-
-    // Detect common api key patterns before creating agent.
     const secretMatches = detectSecrets(form.instructions + " " + form.description);
     if (secretMatches.length > 0) {
-      setError(
-        "Instructions/description appear to contain a secret (" +
-        describeDetectedTypes(secretMatches) +
-        "). Remove it before saving.",
+      setInstructionsWarning(
+        "Contains what looks like a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
       );
       return;
     }
+    setInstructionsWarning(null);
     setBusy(true);
     setError(null);
     try {
@@ -275,6 +274,15 @@ export default function App() {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
+    const secretMatches = detectSecrets(content);
+    if (secretMatches.length > 0) {
+      setError(
+        "Message appears to contain a secret (" +
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before sending.",
+      );
+      return;
+    }
     setPrompt("");
     setError(null);
     try {
@@ -623,7 +631,6 @@ export default function App() {
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
                       <div className="message-body">{message.content}</div>
-                      {/* <div className="message-body">{redactSecrets(message.content)}</div> */}
                     </article>
                   ))
                 )}
@@ -644,7 +651,6 @@ export default function App() {
                   <article className="run-error">
                     <strong>Run failed</strong>
                     <span>{activeRun.error}</span>
-                    {/* <span>{redactSecrets(activeRun.error ?? "")}</span> */}
                   </article>
                 )}
                 <div ref={messageEnd} />
@@ -768,13 +774,20 @@ export default function App() {
               Instructions
               <textarea
                 value={form.instructions}
-                onChange={(event) =>
-                  setForm({ ...form, instructions: event.target.value })
+                onChange={(event) => {
+                  setForm({ ...form, instructions: event.target.value });
+                  if (instructionsWarning) setInstructionsWarning(null);
+                }
                 }
                 rows={6}
                 maxLength={10_000}
               />
             </label>
+            {instructionsWarning && (
+              <div className="error-banner" role="alert" style={{ marginTop: 16 }}>
+                <span>{instructionsWarning}</span>
+              </div>
+            )}
             <div className="modal-footer">
               <button
                 type="button"
