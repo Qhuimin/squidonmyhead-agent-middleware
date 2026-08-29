@@ -117,6 +117,20 @@ export default function App() {
     setBusy(true);
     try {
       const results = await confirmStopAll(busyAgents.map((agent) => agent.id));
+      await Promise.all(
+        results.map((result) =>
+          api.logAuditEvent({
+            type: result.confirmed ? "run_stopped_manual" : "run_stop_unconfirmed",
+            agentId: result.agentId,
+            timestamp: new Date().toISOString(),
+            detail: {
+              trigger: "halt_all",
+              attempts: result.attempts,
+              lastError: result.lastError,
+            },
+          }).catch(() => { }),
+        ),
+      );
       const confirmed = results.filter((result) => result.confirmed);
       const failed = results.filter((result) => !result.confirmed);
       await refreshAgents();
@@ -203,6 +217,12 @@ export default function App() {
       if (isOverDurationLimit(elapsed) && selected) {
         const agentId = selected.id;
         confirmStop(agentId).then((result) => {
+          api.logAuditEvent({
+            type: result.confirmed ? "run_stopped_timeout" : "run_stop_unconfirmed",
+            agentId,
+            timestamp: new Date().toISOString(),
+            detail: { elapsedMs: elapsed, limitMs: MAX_RUN_DURATION_MS, attempts: result.attempts, lastError: result.lastError },
+          }).catch(() => { });
           if (result.confirmed) {
             setError("Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped.");
           } else {
@@ -225,7 +245,20 @@ export default function App() {
   useEffect(() => {
     if (activeRun && isOverTokenBudget(activeRun.usage) && selected) {
       const agentId = selected.id;
+      const usageAtTrigger = totalTokens(activeRun.usage);
       confirmStop(agentId).then((result) => {
+        api.logAuditEvent({
+          type: result.confirmed ? "run_stopped_token_budget" : "run_stop_unconfirmed",
+          agentId,
+          timestamp: new Date().toISOString(),
+          detail: {
+            tokensUsed: usageAtTrigger,
+            budgetLimit: MAX_TOKEN_BUDGET,
+            attempts: result.attempts,
+            lastError: result.lastError,
+          },
+        }).catch(() => { });
+
         if (result.confirmed) {
           setError("Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped.");
         } else {
@@ -257,10 +290,9 @@ export default function App() {
       );
       api.logAuditEvent({
         type: "secret_detected_blocked",
-        field: "instructions",
         agentId: selected?.id ?? null,
-        detectedTypes: secretMatches.map((m) => m.label),
         timestamp: new Date().toISOString(),
+        detail: { field: "instructions", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
       }).catch(() => {
         setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
       });
@@ -293,10 +325,9 @@ export default function App() {
       );
       api.logAuditEvent({
         type: "secret_detected_blocked",
-        field: "instructions",
         agentId: selected?.id ?? null,
-        detectedTypes: secretMatches.map((m) => m.label),
         timestamp: new Date().toISOString(),
+        detail: { field: "instructions", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
       }).catch(() => {
         setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
       });
@@ -394,10 +425,9 @@ export default function App() {
       );
       api.logAuditEvent({
         type: "secret_detected_blocked",
-        field: "instructions",
         agentId: selected?.id ?? null,
-        detectedTypes: secretMatches.map((m) => m.label),
         timestamp: new Date().toISOString(),
+        detail: { field: "instructions", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
       }).catch(() => {
         setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
       });

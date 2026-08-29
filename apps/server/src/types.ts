@@ -88,10 +88,16 @@ export interface AgentRunner {
   isAvailable(): Promise<boolean>;
 }
 
+export type AuditEventType =
+  | "secret_detected_blocked"
+  | "run_stopped_timeout"
+  | "run_stopped_token_budget"
+  | "run_stopped_manual"
+  | "run_stop_unconfirmed";
+
 export interface AuditEvent {
-  type: "secret_detected_blocked";
-  field: "instructions" | "description" | "message";
+  type: AuditEventType;
   agentId: string | null;
-  detectedTypes: string[];
   timestamp: string;
+  detail: Record<string, string | number | boolean | null>;
 }
