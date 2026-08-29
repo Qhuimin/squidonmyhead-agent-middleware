@@ -7,6 +7,7 @@ import {
   setAuthToken,
 } from "./api";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import { describeDetectedTypes, detectSecrets, redactSecrets } from "../../server/src/middleware/safety/secret-detector";
 
 const MOCK_USERS = [
   { id: "alice", label: "Alice (Developer)" },
@@ -150,6 +151,17 @@ export default function App() {
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
+
+    // Detect common api key patterns before creating agent.
+    const secretMatches = detectSecrets(form.instructions + " " + form.description);
+    if (secretMatches.length > 0) {
+      setError(
+        "Instructions/description appear to contain a secret (" +
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before saving.",
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -168,6 +180,16 @@ export default function App() {
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
+    // Detect common api key patterns before creating agent.
+    const secretMatches = detectSecrets(form.instructions + " " + form.description);
+    if (secretMatches.length > 0) {
+      setError(
+        "Instructions/description appear to contain a secret (" +
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before saving.",
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -601,6 +623,7 @@ export default function App() {
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
                       <div className="message-body">{message.content}</div>
+                      {/* <div className="message-body">{redactSecrets(message.content)}</div> */}
                     </article>
                   ))
                 )}
@@ -621,6 +644,7 @@ export default function App() {
                   <article className="run-error">
                     <strong>Run failed</strong>
                     <span>{activeRun.error}</span>
+                    {/* <span>{redactSecrets(activeRun.error ?? "")}</span> */}
                   </article>
                 )}
                 <div ref={messageEnd} />
