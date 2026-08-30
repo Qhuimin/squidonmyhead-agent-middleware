@@ -22,5 +22,9 @@
   "devDependencies": {
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1"
   }
 }

@@ -5,12 +5,14 @@ import { z } from "zod";
 export const AUDIT_DATA_DIR = path.join(process.cwd(), "src/data");
 export const AUDIT_LOG_PATH = path.join(AUDIT_DATA_DIR, "audit.jsonl");
 
-export const KNOWN_AUDIT_EVENT_TYPES = [
+const KNOWN_AUDIT_EVENT_TYPES = [
   "secret_detected_blocked",
   "run_stopped_timeout",
   "run_stopped_token_budget",
   "run_stopped_manual",
   "run_stop_unconfirmed",
+  "file_upload_blocked",
+  "file_upload_allowed",
 ] as const;
 
 export const auditEventBody = z.object({

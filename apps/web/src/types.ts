@@ -117,7 +117,9 @@ export type AuditEventType =
   | "run_stopped_timeout"
   | "run_stopped_token_budget"
   | "run_stopped_manual"
-  | "run_stop_unconfirmed";
+  | "run_stop_unconfirmed"
+  | "file_upload_blocked"
+  | "file_upload_allowed";
 
 export interface AuditEvent {
   type: AuditEventType;

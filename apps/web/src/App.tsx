@@ -25,6 +25,8 @@ import {
   WARNING_THRESHOLD_RATIO,
 } from "../../server/src/middleware/safety/run-limits";
 import { confirmStop, confirmStopAll } from "./confirm-stop";
+import { DEFAULT_BLOCKED_LEVELS, isBlockedLevel, normalizeLabel, SensitivityLevel } from "./safety/sensitivity-levels";
+import { detectSensitivityLabel } from "./safety/sensitivity-label";
 
 const MOCK_USERS = [
   { id: "alice", label: "Alice (Developer)" },
@@ -37,22 +39,22 @@ const AVAILABLE_SCOPES: {
   label: string;
   description: string;
 }[] = [
-  {
-    id: "fs:read",
-    label: "Read Workspace",
-    description: "Inspect files & folders",
-  },
-  {
-    id: "fs:write",
-    label: "Write Workspace",
-    description: "Create & edit files",
-  },
-  {
-    id: "cmd:exec",
-    label: "Execute Terminal",
-    description: "Run npm, tests, bash commands",
-  },
-];
+    {
+      id: "fs:read",
+      label: "Read Workspace",
+      description: "Inspect files & folders",
+    },
+    {
+      id: "fs:write",
+      label: "Write Workspace",
+      description: "Create & edit files",
+    },
+    {
+      id: "cmd:exec",
+      label: "Execute Terminal",
+      description: "Run npm, tests, bash commands",
+    },
+  ];
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -132,6 +134,8 @@ export default function App() {
   const [runTokenUsage, setRunTokenUsage] = useState<Record<string, number>>(
     {},
   );
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
+  const [blockedLevels] = useState<SensitivityLevel[]>(DEFAULT_BLOCKED_LEVELS);
 
   selectedIdRef.current = selectedId;
 
@@ -182,7 +186,7 @@ export default function App() {
                 lastError: result.lastError,
               },
             })
-            .catch(() => {}),
+            .catch(() => { }),
         ),
       );
       const confirmed = results.filter((result) => result.confirmed);
@@ -196,13 +200,13 @@ export default function App() {
       } else {
         setError(
           "Halted " +
-            confirmed.length +
-            " of " +
-            results.length +
-            " agent(s). " +
-            failed.length +
-            " could not be confirmed stopped — check manually: " +
-            failed.map((f) => f.agentId).join(", "),
+          confirmed.length +
+          " of " +
+          results.length +
+          " agent(s). " +
+          failed.length +
+          " could not be confirmed stopped — check manually: " +
+          failed.map((f) => f.agentId).join(", "),
         );
       }
     } finally {
@@ -293,18 +297,18 @@ export default function App() {
                 lastError: result.lastError,
               },
             })
-            .catch(() => {});
+            .catch(() => { });
           if (result.confirmed) {
             setError(
               "Run exceeded the " +
-                formatDuration(MAX_RUN_DURATION_MS) +
-                " time limit and was stopped.",
+              formatDuration(MAX_RUN_DURATION_MS) +
+              " time limit and was stopped.",
             );
           } else {
             setError(
               "Run exceeded the time limit, but the stop could not be confirmed (" +
-                (result.lastError ?? "unknown error") +
-                "). The agent may still be running — check manually.",
+              (result.lastError ?? "unknown error") +
+              "). The agent may still be running — check manually.",
             );
           }
           refreshAgents();
@@ -335,19 +339,19 @@ export default function App() {
               lastError: result.lastError,
             },
           })
-          .catch(() => {});
+          .catch(() => { });
 
         if (result.confirmed) {
           setError(
             "Run exceeded the " +
-              MAX_TOKEN_BUDGET.toLocaleString() +
-              "-token budget and was stopped.",
+            MAX_TOKEN_BUDGET.toLocaleString() +
+            "-token budget and was stopped.",
           );
         } else {
           setError(
             "Run exceeded the token budget, but the stop could not be confirmed (" +
-              (result.lastError ?? "unknown error") +
-              "). The agent may still be running — check manually.",
+            (result.lastError ?? "unknown error") +
+            "). The agent may still be running — check manually.",
           );
         }
         refreshAgents();
@@ -401,8 +405,8 @@ export default function App() {
     if (secretMatches.length > 0) {
       setError(
         "Instructions/description appear to contain a secret (" +
-          describeDetectedTypes(secretMatches) +
-          "). Remove it before saving.",
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before saving.",
       );
       api
         .logAuditEvent({
@@ -447,8 +451,8 @@ export default function App() {
     if (secretMatches.length > 0) {
       setError(
         "Instructions/description appear to contain a secret (" +
-          describeDetectedTypes(secretMatches) +
-          "). Remove it before saving.",
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before saving.",
       );
       api
         .logAuditEvent({
@@ -491,8 +495,8 @@ export default function App() {
     if (
       !window.confirm(
         "Immediately revoke all permissions for " +
-          selected.name +
-          "? All execution will be blocked.",
+        selected.name +
+        "? All execution will be blocked.",
       )
     ) {
       return;
@@ -586,8 +590,8 @@ export default function App() {
     if (secretMatches.length > 0) {
       setError(
         "Instructions/description appear to contain a secret (" +
-          describeDetectedTypes(secretMatches) +
-          "). Remove it before saving.",
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before saving.",
       );
       api
         .logAuditEvent({
@@ -646,6 +650,29 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const rawLabel = await detectSensitivityLabel(file);
+    const level = rawLabel ? normalizeLabel(rawLabel) : null;
+    const blocked = isBlockedLevel(level, blockedLevels);
+
+    api.logAuditEvent({
+      type: blocked ? "file_upload_blocked" : "file_upload_allowed",
+      agentId: selected?.id ?? null,
+      timestamp: new Date().toISOString(),
+      detail: { fileName: file.name, detectedLabel: level ?? rawLabel ?? "none" },
+    }).catch(() => { });
+
+    if (blocked) {
+      setUploadWarning("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
+      return;
+    }
+    setUploadWarning(null);
   };
 
   if (authRequired === null) {
@@ -842,7 +869,7 @@ export default function App() {
                     ) + "%",
                   background:
                     globalTokensUsed / GLOBAL_TOKEN_BUDGET >=
-                    WARNING_THRESHOLD_RATIO
+                      WARNING_THRESHOLD_RATIO
                       ? "#dc2626"
                       : "#4a5568",
                   transition: "width 0.3s",
@@ -1025,7 +1052,7 @@ export default function App() {
                           checked={settingsForm.allowedScopes.includes(
                             scope.id,
                           )}
-                          onChange={() => {}}
+                          onChange={() => { }}
                           style={{
                             width: "16px",
                             height: "16px",
@@ -1208,6 +1235,15 @@ export default function App() {
                     Enter to send · Shift + Enter for newline ·{" "}
                     {system?.codexSandboxMode ?? "checking sandbox"}
                   </span>
+                  <label style={{ cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                    Add File
+                    <input
+                      type="file"
+                      accept=".docx,.pdf"
+                      onChange={handleFileSelected}
+                      style={{ display: "none" }}
+                    />
+                  </label>
                   <button
                     className="send-button"
                     disabled={
@@ -1349,7 +1385,7 @@ export default function App() {
                     <input
                       type="checkbox"
                       checked={createForm.allowedScopes.includes(scope.id)}
-                      onChange={() => {}}
+                      onChange={() => { }}
                       style={{
                         width: "16px",
                         height: "16px",
