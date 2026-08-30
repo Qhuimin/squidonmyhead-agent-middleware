@@ -912,52 +912,50 @@ export default function App() {
           </div>
         ) : null}
 
-        {error && (
-          <div className="error-banner" role="alert">
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>×</button>
-          </div>
-        )}
-
         {selected ? (
           <>
-            <header className="agent-header">
-              <div>
-                <div className="header-title-row">
-                  <h1>{selected.name}</h1>
-                  <StatusPill
-                    status={selected.status}
-                    isRevoked={selected.isRevoked}
-                  />
+            <header className="agent-header" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", width: "100%" }}>
+                <div>
+                  <div className="header-title-row">
+                    <h1>{selected.name}</h1>
+                    <StatusPill status={selected.status} isRevoked={selected.isRevoked} />
+                  </div>
+                  <p>
+                    {selected.description || "A Codex coding Agent in an isolated workspace."}
+                  </p>
                 </div>
-                <p>
-                  {selected.description ||
-                    "A Codex coding Agent in an isolated workspace."}
-                </p>
+                <div className="header-actions">
+                  <button
+                    className="button button-ghost"
+                    onClick={() => setShowSettings((value) => !value)}
+                    disabled={busy || selected.status === "busy"}
+                  >
+                    Settings
+                  </button>
+                  <button
+                    className="button button-ghost"
+                    onClick={toggleAgent}
+                    disabled={busy || selected.isRevoked}
+                  >
+                    {selected.status === "stopped" ? "Start" : "Stop"}
+                  </button>
+                  <button
+                    className="button button-danger"
+                    onClick={deleteAgent}
+                    disabled={busy || selected.status === "busy"}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
-              <div className="header-actions">
-                <button
-                  className="button button-ghost"
-                  onClick={() => setShowSettings((value) => !value)}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Settings
-                </button>
-                <button
-                  className="button button-ghost"
-                  onClick={toggleAgent}
-                  disabled={busy || selected.isRevoked}
-                >
-                  {selected.status === "stopped" ? "Start" : "Stop"}
-                </button>
-                <button
-                  className="button button-danger"
-                  onClick={deleteAgent}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Delete
-                </button>
-              </div>
+
+              {error && (
+                <div className="error-banner" role="alert" style={{ width: "100%" }}>
+                  <span>{error}</span>
+                  <button onClick={() => setError(null)}>×</button>
+                </div>
+              )}
             </header>
 
             {showSettings && (
