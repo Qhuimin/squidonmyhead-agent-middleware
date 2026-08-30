@@ -34,3 +34,7 @@ export function formatDuration(ms: number): string {
   const seconds = totalSeconds % 60;
   return minutes + ":" + String(seconds).padStart(2, "0");
 }
+
+export function isOverGlobalBudget(globalTokensUsed: number): boolean {
+  return globalTokensUsed >= GLOBAL_TOKEN_BUDGET;
+}

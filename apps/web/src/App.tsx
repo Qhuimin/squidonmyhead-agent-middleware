@@ -23,6 +23,7 @@ import {
   totalTokens,
   GLOBAL_TOKEN_BUDGET,
   WARNING_THRESHOLD_RATIO,
+  isOverGlobalBudget,
 } from "../../server/src/middleware/safety/run-limits";
 import { confirmStop, confirmStopAll } from "./confirm-stop";
 import { DEFAULT_BLOCKED_LEVELS, isBlockedLevel, normalizeLabel, SensitivityLevel } from "./safety/sensitivity-levels";
@@ -134,9 +135,12 @@ export default function App() {
   const [runTokenUsage, setRunTokenUsage] = useState<Record<string, number>>(
     {},
   );
+  const stoppedRunIdsRef = useRef(new Set<string>());
   const [uploadWarning, setUploadWarning] = useState<string | null>(null);
   const [blockedLevels] = useState<SensitivityLevel[]>(DEFAULT_BLOCKED_LEVELS);
-
+  const [allowOverGlobalBudget, setAllowOverGlobalBudget] = useState(false);
+  const sessionStartTimeRef = useRef(new Date().toISOString());
+  
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -234,6 +238,7 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setShowSettings(false);
+    setError(null);
     if (!selectedId) {
       setMessages([]);
       return;
@@ -270,97 +275,51 @@ export default function App() {
   }, [messages, activeRun]);
 
   useEffect(() => {
-    const isActive =
-      activeRun?.status === "queued" || activeRun?.status === "running";
-    if (!isActive || !activeRun) {
-      setRunElapsedMs(0);
-      return;
-    }
-    const startedAt = Date.parse(activeRun.createdAt);
-    const tick = () => {
-      const elapsed = Date.now() - startedAt;
-      setRunElapsedMs(elapsed);
-      if (isOverDurationLimit(elapsed) && selected) {
-        const agentId = selected.id;
-        confirmStop(agentId).then((result) => {
-          api
-            .logAuditEvent({
-              type: result.confirmed
-                ? "run_stopped_timeout"
-                : "run_stop_unconfirmed",
-              agentId,
-              timestamp: new Date().toISOString(),
-              detail: {
-                elapsedMs: elapsed,
-                limitMs: MAX_RUN_DURATION_MS,
-                attempts: result.attempts,
-                lastError: result.lastError,
-              },
-            })
-            .catch(() => { });
-          if (result.confirmed) {
-            setError(
-              "Run exceeded the " +
-              formatDuration(MAX_RUN_DURATION_MS) +
-              " time limit and was stopped.",
-            );
-          } else {
-            setError(
-              "Run exceeded the time limit, but the stop could not be confirmed (" +
-              (result.lastError ?? "unknown error") +
-              "). The agent may still be running — check manually.",
-            );
-          }
-          refreshAgents();
-        });
+    if (!activeRun || !selected) return;
+    if (activeRun.createdAt < sessionStartTimeRef.current) return;
+    if (stoppedRunIdsRef.current.has(activeRun.id)) return;
+
+    const isDurationBreach = isOverDurationLimit(runElapsedMs);
+    const isBudgetBreach = isOverTokenBudget(activeRun.usage);
+    if (!isDurationBreach && !isBudgetBreach) return;
+
+    stoppedRunIdsRef.current.add(activeRun.id);
+    const agentId = selected.id;
+
+    confirmStop(agentId).then((result) => {
+      api.logAuditEvent({
+        type: isDurationBreach
+          ? (result.confirmed ? "run_stopped_timeout" : "run_stop_unconfirmed")
+          : (result.confirmed ? "run_stopped_token_budget" : "run_stop_unconfirmed"),
+        agentId,
+        timestamp: new Date().toISOString(),
+        detail: {
+          elapsedMs: runElapsedMs,
+          tokensUsed: totalTokens(activeRun.usage),
+          attempts: result.attempts,
+          lastError: result.lastError,
+        },
+      }).catch(() => { });
+
+      if (result.confirmed) {
+        setError(
+          isDurationBreach
+            ? "Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped."
+            : "Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped.",
+        );
+      } else {
+        setError(
+          "Run exceeded a safety limit, but the stop could not be confirmed (" +
+          (result.lastError ?? "unknown error") +
+          "). The agent may still be running — check manually.",
+        );
       }
-    };
-    tick();
-    const interval = setInterval(tick, 1000);
-    return () => clearInterval(interval);
-  }, [activeRun, selected]);
+      refreshAgents();
+    });
+  }, [activeRun, selected, runElapsedMs]);
 
   useEffect(() => {
-    if (activeRun && isOverTokenBudget(activeRun.usage) && selected) {
-      const agentId = selected.id;
-      const usageAtTrigger = totalTokens(activeRun.usage);
-      confirmStop(agentId).then((result) => {
-        api
-          .logAuditEvent({
-            type: result.confirmed
-              ? "run_stopped_token_budget"
-              : "run_stop_unconfirmed",
-            agentId,
-            timestamp: new Date().toISOString(),
-            detail: {
-              tokensUsed: usageAtTrigger,
-              budgetLimit: MAX_TOKEN_BUDGET,
-              attempts: result.attempts,
-              lastError: result.lastError,
-            },
-          })
-          .catch(() => { });
-
-        if (result.confirmed) {
-          setError(
-            "Run exceeded the " +
-            MAX_TOKEN_BUDGET.toLocaleString() +
-            "-token budget and was stopped.",
-          );
-        } else {
-          setError(
-            "Run exceeded the token budget, but the stop could not be confirmed (" +
-            (result.lastError ?? "unknown error") +
-            "). The agent may still be running — check manually.",
-          );
-        }
-        refreshAgents();
-      });
-    }
-  }, [activeRun, selected]);
-
-  useEffect(() => {
-    if (activeRun) {
+    if (activeRun && activeRun.createdAt >= sessionStartTimeRef.current) {
       setRunTokenUsage((prev) => ({
         ...prev,
         [activeRun.id]: totalTokens(activeRun.usage),
@@ -585,32 +544,47 @@ export default function App() {
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
+
+    const isGlobalExceeded = isOverGlobalBudget(globalTokensUsed);
+    if (isGlobalExceeded && !allowOverGlobalBudget) {
+      setError(
+        "Session-wide budget of " + GLOBAL_TOKEN_BUDGET.toLocaleString() +
+        " tokens has been reached. Sending is blocked. Enable override to continue anyway.",
+      );
+      api.logAuditEvent({
+        type: "global_budget_exceeded_blocked",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
+      }).catch(() => { });
+      return;
+    }
+    if (isGlobalExceeded && allowOverGlobalBudget) {
+      api.logAuditEvent({
+        type: "global_budget_exceeded_override",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
+      }).catch(() => { });
+    }
+
     const content = prompt.trim();
     const secretMatches = detectSecrets(content);
     if (secretMatches.length > 0) {
       setError(
-        "Instructions/description appear to contain a secret (" +
+        "Message appears to contain a secret (" +
         describeDetectedTypes(secretMatches) +
-        "). Remove it before saving.",
+        "). Remove it before sending.",
       );
-      api
-        .logAuditEvent({
-          type: "secret_detected_blocked",
-          agentId: selected?.id ?? null,
-          timestamp: new Date().toISOString(),
-          detail: {
-            field: "instructions",
-            detectedTypes: secretMatches.map((m) => m.label).join(", "),
-          },
-        })
-        .catch(() => {
-          setError(
-            (prev) =>
-              (prev ?? "") + " (Note: audit log entry failed to record.)",
-          );
-        });
+      api.logAuditEvent({
+        type: "secret_detected_blocked",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: { field: "message", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
+      }).catch(() => { });
       return;
     }
+
     setPrompt("");
     setError(null);
     try {
@@ -620,9 +594,7 @@ export default function App() {
         setActiveRun(result.run);
       }
       setAgents((current) =>
-        current.map((agent) =>
-          agent.id === selected.id ? { ...agent, status: "busy" } : agent,
-        ),
+        current.map((agent) => (agent.id === selected.id ? { ...agent, status: "busy" } : agent)),
       );
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
@@ -833,6 +805,7 @@ export default function App() {
             alignItems: "center",
             gap: 16,
             marginBottom: 12,
+            width: "100%",
           }}
         >
           <div style={{ flex: 1 }}>
@@ -847,8 +820,7 @@ export default function App() {
             >
               <span>Shared token pool</span>
               <span>
-                {globalTokensUsed.toLocaleString()} /{" "}
-                {GLOBAL_TOKEN_BUDGET.toLocaleString()}
+                {globalTokensUsed.toLocaleString()} / {GLOBAL_TOKEN_BUDGET.toLocaleString()}
               </span>
             </div>
             <div
@@ -862,38 +834,41 @@ export default function App() {
               <div
                 style={{
                   height: "100%",
-                  width:
-                    Math.min(
-                      100,
-                      (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100,
-                    ) + "%",
+                  width: Math.min(100, (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100) + "%",
                   background:
-                    globalTokensUsed / GLOBAL_TOKEN_BUDGET >=
-                      WARNING_THRESHOLD_RATIO
-                      ? "#dc2626"
-                      : "#4a5568",
+                    globalTokensUsed / GLOBAL_TOKEN_BUDGET >= WARNING_THRESHOLD_RATIO ? "#dc2626" : "#4a5568",
                   transition: "width 0.3s",
                 }}
               />
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={haltAll}
-            style={{
-              flexShrink: 0,
-              background: "#dc2626",
-              color: "white",
-              border: 0,
-              borderRadius: 8,
-              padding: "8px 16px",
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            Halt All Agents
-          </button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={haltAll}
+              style={{
+                background: "#dc2626",
+                color: "white",
+                border: 0,
+                borderRadius: 8,
+                padding: "8px 16px",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Halt All Agents
+            </button>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={allowOverGlobalBudget}
+                onChange={(event) => setAllowOverGlobalBudget(event.target.checked)}
+                style={{ width: 12, height: 12, margin: 0 }}
+              />
+              Override global budget
+            </label>
+          </div>
         </div>
 
         {!system?.arkConfigured || !system?.codexAvailable ? (

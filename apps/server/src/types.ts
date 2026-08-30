@@ -108,7 +108,9 @@ export type AuditEventType =
   | "run_stopped_manual"
   | "run_stop_unconfirmed"
   | "file_upload_blocked"
-  | "file_upload_allowed";
+  | "file_upload_allowed"
+  | "global_budget_exceeded_blocked"
+  | "global_budget_exceeded_override";
 
 export interface AuditEvent {
   type: AuditEventType;
