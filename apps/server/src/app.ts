@@ -19,6 +19,7 @@ import {
 } from "./audit-service.js";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { describeDetectedTypes, detectSecrets } from "./middleware/safety/secret-detector.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -31,12 +32,25 @@ const agentScopeEnum = z.enum([
   "net:outbound",
 ]);
 
-const createAgentBody = z.object({
-  name: z.string().trim().min(1).max(80),
-  description: z.string().max(500).optional(),
-  instructions: z.string().max(10_000).optional(),
-  allowedScopes: z.array(agentScopeEnum).optional(),
-});
+const createAgentBody = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    description: z.string().max(500).optional(),
+    instructions: z.string().max(10_000).optional(),
+    allowedScopes: z.array(agentScopeEnum).optional(),
+  })
+  .superRefine((value, ctx) => {
+    const combined = [value.description, value.instructions].filter(Boolean).join(" ");
+    const matches = detectSecrets(combined);
+    if (matches.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Instructions/description appear to contain a secret (" + describeDetectedTypes(matches) + ")",
+        path: ["instructions"],
+      });
+    }
+  });
+
 const updateAgentBody = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
@@ -44,6 +58,17 @@ const updateAgentBody = z
     instructions: z.string().max(10_000).optional(),
     allowedScopes: z.array(agentScopeEnum).optional(),
     isRevoked: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const combined = [value.description, value.instructions].filter(Boolean).join(" ");
+    const matches = detectSecrets(combined);
+    if (matches.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Instructions/description appear to contain a secret (" + describeDetectedTypes(matches) + ")",
+        path: ["instructions"],
+      });
+    }
   })
   .refine(
     (value) => Object.keys(value).length > 0,

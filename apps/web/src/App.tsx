@@ -140,7 +140,6 @@ export default function App() {
   const [blockedLevels] = useState<SensitivityLevel[]>(DEFAULT_BLOCKED_LEVELS);
   const [allowOverGlobalBudget, setAllowOverGlobalBudget] = useState(false);
   const sessionStartTimeRef = useRef(new Date().toISOString());
-  
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -216,6 +215,17 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const logIfRedacted = (raw: string, agentId: string | null, source: "message" | "run_error") => {
+    const matches = detectSecrets(raw);
+    if (matches.length === 0) return;
+    api.logAuditEvent({
+      type: "output_secret_redacted",
+      agentId,
+      timestamp: new Date().toISOString(),
+      detail: { source, detectedTypes: matches.map((m) => m.label).join(", ") },
+    }).catch(() => { });
   };
 
   useEffect(() => {
@@ -324,6 +334,19 @@ export default function App() {
         ...prev,
         [activeRun.id]: totalTokens(activeRun.usage),
       }));
+    }
+  }, [activeRun]);
+
+  useEffect(() => {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage) {
+      logIfRedacted(lastMessage.content, selected?.id ?? null, "message");
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    if (activeRun?.status === "failed" && activeRun.error) {
+      logIfRedacted(activeRun.error, selected?.id ?? null, "run_error");
     }
   }, [activeRun]);
 

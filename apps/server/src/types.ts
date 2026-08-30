@@ -103,6 +103,7 @@ export interface AgentRunner {
 
 export type AuditEventType =
   | "secret_detected_blocked"
+  | "output_secret_redacted"
   | "run_stopped_timeout"
   | "run_stopped_token_budget"
   | "run_stopped_manual"
