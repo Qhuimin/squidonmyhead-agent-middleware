@@ -12,16 +12,39 @@ import {
   filterAgentsByOwner,
   assertAgentOwnership,
 } from "./middleware/identity/index.js";
+import {
+  appendAuditLog,
+  AUDIT_DATA_DIR,
+  auditEventBody,
+} from "./audit-service.js";
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
+
+// define accepted agent permission scopes for validation
+const agentScopeEnum = z.enum([
+  "fs:read",
+  "fs:write",
+  "cmd:exec",
+  "net:outbound",
+]);
+
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
+  allowedScopes: z.array(agentScopeEnum).optional(),
 });
-const updateAgentBody = createAgentBody
-  .partial()
+const updateAgentBody = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().max(500).optional(),
+    instructions: z.string().max(10_000).optional(),
+    allowedScopes: z.array(agentScopeEnum).optional(),
+    isRevoked: z.boolean().optional(),
+  })
   .refine(
     (value) => Object.keys(value).length > 0,
     "At least one field is required",
@@ -87,7 +110,7 @@ export async function createApp(
     return { agents: filterAgentsByOwner(allAgents, user.userId) };
   });
 
-  // injected ownerId: user:userId into the payload sent to service.createAgent(...) so new agents are linked to their creator.
+  // injected ownerId: user.userId into the payload sent to service.createAgent(...) so new agents are linked to their creator.
   app.post("/api/agents", async (request, reply) => {
     const user = extractUserContext(request);
     const body = createAgentBody.parse(request.body);
@@ -116,6 +139,20 @@ export async function createApp(
     assertAgentOwnership(agent, user.userId);
     const body = updateAgentBody.parse(request.body);
     return { agent: await service.updateAgent(id, body) };
+  });
+
+  // emergency revocation endpoint: strip scopes and set isRevoked flag
+  app.post("/api/agents/:id/revoke", async (request) => {
+    const user = extractUserContext(request);
+    const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    assertAgentOwnership(agent, user.userId);
+    return {
+      agent: await service.updateAgent(id, {
+        isRevoked: true,
+        allowedScopes: [],
+      }),
+    };
   });
 
   app.delete("/api/agents/:id", async (request) => {
@@ -213,6 +250,27 @@ export async function createApp(
       error: appError.message,
       ...(validationError ? { details: error.issues } : {}),
     });
+  });
+
+  app.post("/api/audit", async (request, reply) => {
+    const parseResult = auditEventBody.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply
+        .status(400)
+        .send({ ok: false, error: "Invalid audit event shape" });
+    }
+    try {
+      await appendAuditLog(parseResult.data);
+      return reply.send({ ok: true });
+    } catch (reason) {
+      return reply
+        .status(500)
+        .send({ ok: false, error: "Failed to record audit event" });
+    }
+  });
+
+  app.addHook("onReady", async () => {
+    await mkdir(AUDIT_DATA_DIR, { recursive: true });
   });
 
   return app;

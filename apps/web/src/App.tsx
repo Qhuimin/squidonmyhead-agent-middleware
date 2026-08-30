@@ -6,14 +6,56 @@ import {
   setActiveUserId,
   setAuthToken,
 } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
-import { describeDetectedTypes, detectSecrets, redactSecrets } from "../../server/src/middleware/safety/secret-detector";
+import type { Agent, AgentRun, AgentScope, Message, SystemInfo } from "./types";
+import { DEFAULT_AGENT_SCOPES } from "./types";
+import {
+  describeDetectedTypes,
+  detectSecrets,
+  redactSecrets,
+} from "../../server/src/middleware/safety/secret-detector";
+import {
+  MAX_RUN_DURATION_MS,
+  MAX_TOKEN_BUDGET,
+  formatDuration,
+  isOverDurationLimit,
+  isOverTokenBudget,
+  isNearingLimit,
+  totalTokens,
+  GLOBAL_TOKEN_BUDGET,
+  WARNING_THRESHOLD_RATIO,
+  isOverGlobalBudget,
+} from "../../server/src/middleware/safety/run-limits";
+import { confirmStop, confirmStopAll } from "./confirm-stop";
+import { DEFAULT_BLOCKED_LEVELS, isBlockedLevel, normalizeLabel, SensitivityLevel } from "./safety/sensitivity-levels";
+import { detectSensitivityLabel } from "./safety/sensitivity-label";
 
 const MOCK_USERS = [
   { id: "alice", label: "Alice (Developer)" },
   { id: "bob", label: "Bob (Engineer)" },
   { id: "carol", label: "Carol (Admin)" },
 ];
+
+const AVAILABLE_SCOPES: {
+  id: AgentScope;
+  label: string;
+  description: string;
+}[] = [
+    {
+      id: "fs:read",
+      label: "Read Workspace",
+      description: "Inspect files & folders",
+    },
+    {
+      id: "fs:write",
+      label: "Write Workspace",
+      description: "Create & edit files",
+    },
+    {
+      id: "cmd:exec",
+      label: "Execute Terminal",
+      description: "Run npm, tests, bash commands",
+    },
+  ];
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -26,6 +68,7 @@ const emptyForm = {
   description: "",
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
+  allowedScopes: [...DEFAULT_AGENT_SCOPES] as AgentScope[],
 };
 
 function formatTime(value: string): string {
@@ -35,7 +78,24 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
-function StatusPill({ status }: { status: Agent["status"] }) {
+function StatusPill({
+  status,
+  isRevoked,
+}: {
+  status: Agent["status"];
+  isRevoked?: boolean;
+}) {
+  if (isRevoked) {
+    return (
+      <span
+        className="status"
+        style={{ background: "#7f1d1d", color: "#fca5a5" }}
+      >
+        <span className="status-dot" style={{ background: "#ef4444" }} />
+        REVOKED
+      </span>
+    );
+  }
   return (
     <span className={"status status-" + status}>
       <span className="status-dot" />
@@ -56,7 +116,8 @@ export default function App() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [form, setForm] = useState(emptyForm);
+  const [createForm, setCreateForm] = useState(emptyForm);
+  const [settingsForm, setSettingsForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,6 +128,19 @@ export default function App() {
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(
+    null,
+  );
+  const [runElapsedMs, setRunElapsedMs] = useState(0);
+  const [runTokenUsage, setRunTokenUsage] = useState<Record<string, number>>(
+    {},
+  );
+  const stoppedRunIdsRef = useRef(new Set<string>());
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
+  const [blockedLevels] = useState<SensitivityLevel[]>(DEFAULT_BLOCKED_LEVELS);
+  const [allowOverGlobalBudget, setAllowOverGlobalBudget] = useState(false);
+  const sessionStartTimeRef = useRef(new Date().toISOString());
+  
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -95,6 +169,55 @@ export default function App() {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
 
+  const haltAll = async () => {
+    const busyAgents = agents.filter((agent) => agent.status === "busy");
+    if (busyAgents.length === 0) return;
+    setBusy(true);
+    try {
+      const results = await confirmStopAll(busyAgents.map((agent) => agent.id));
+      await Promise.all(
+        results.map((result) =>
+          api
+            .logAuditEvent({
+              type: result.confirmed
+                ? "run_stopped_manual"
+                : "run_stop_unconfirmed",
+              agentId: result.agentId,
+              timestamp: new Date().toISOString(),
+              detail: {
+                trigger: "halt_all",
+                attempts: result.attempts,
+                lastError: result.lastError,
+              },
+            })
+            .catch(() => { }),
+        ),
+      );
+      const confirmed = results.filter((result) => result.confirmed);
+      const failed = results.filter((result) => !result.confirmed);
+      await refreshAgents();
+      setActiveRun(null);
+      if (failed.length === 0) {
+        setError(
+          "Halted " + confirmed.length + " agent(s), confirmed stopped.",
+        );
+      } else {
+        setError(
+          "Halted " +
+          confirmed.length +
+          " of " +
+          results.length +
+          " agent(s). " +
+          failed.length +
+          " could not be confirmed stopped — check manually: " +
+          failed.map((f) => f.agentId).join(", "),
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     mountedRef.current = true;
     void api
@@ -115,6 +238,7 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setShowSettings(false);
+    setError(null);
     if (!selectedId) {
       setMessages([]);
       return;
@@ -137,10 +261,11 @@ export default function App() {
 
   useEffect(() => {
     if (selected) {
-      setForm({
+      setSettingsForm({
         name: selected.name,
         description: selected.description,
         instructions: selected.instructions,
+        allowedScopes: selected.allowedScopes ?? [...DEFAULT_AGENT_SCOPES],
       });
     }
   }, [selected]);
@@ -149,26 +274,126 @@ export default function App() {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
 
-  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeRun || !selected) return;
+    if (activeRun.createdAt < sessionStartTimeRef.current) return;
+    if (stoppedRunIdsRef.current.has(activeRun.id)) return;
+
+    const isDurationBreach = isOverDurationLimit(runElapsedMs);
+    const isBudgetBreach = isOverTokenBudget(activeRun.usage);
+    if (!isDurationBreach && !isBudgetBreach) return;
+
+    stoppedRunIdsRef.current.add(activeRun.id);
+    const agentId = selected.id;
+
+    confirmStop(agentId).then((result) => {
+      api.logAuditEvent({
+        type: isDurationBreach
+          ? (result.confirmed ? "run_stopped_timeout" : "run_stop_unconfirmed")
+          : (result.confirmed ? "run_stopped_token_budget" : "run_stop_unconfirmed"),
+        agentId,
+        timestamp: new Date().toISOString(),
+        detail: {
+          elapsedMs: runElapsedMs,
+          tokensUsed: totalTokens(activeRun.usage),
+          attempts: result.attempts,
+          lastError: result.lastError,
+        },
+      }).catch(() => { });
+
+      if (result.confirmed) {
+        setError(
+          isDurationBreach
+            ? "Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped."
+            : "Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped.",
+        );
+      } else {
+        setError(
+          "Run exceeded a safety limit, but the stop could not be confirmed (" +
+          (result.lastError ?? "unknown error") +
+          "). The agent may still be running — check manually.",
+        );
+      }
+      refreshAgents();
+    });
+  }, [activeRun, selected, runElapsedMs]);
+
+  useEffect(() => {
+    if (activeRun && activeRun.createdAt >= sessionStartTimeRef.current) {
+      setRunTokenUsage((prev) => ({
+        ...prev,
+        [activeRun.id]: totalTokens(activeRun.usage),
+      }));
+    }
+  }, [activeRun]);
+
+  const globalTokensUsed = Object.values(runTokenUsage).reduce(
+    (sum, n) => sum + n,
+    0,
+  );
+
+  const toggleCreateScope = (scopeId: AgentScope) => {
+    setCreateForm((prev) => {
+      const exists = prev.allowedScopes.includes(scopeId);
+      return {
+        ...prev,
+        allowedScopes: exists
+          ? prev.allowedScopes.filter((s) => s !== scopeId)
+          : [...prev.allowedScopes, scopeId],
+      };
+    });
+  };
+
+  const toggleSettingsScope = (scopeId: AgentScope) => {
+    setSettingsForm((prev) => {
+      const exists = prev.allowedScopes.includes(scopeId);
+      return {
+        ...prev,
+        allowedScopes: exists
+          ? prev.allowedScopes.filter((s) => s !== scopeId)
+          : [...prev.allowedScopes, scopeId],
+      };
+    });
+  };
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
-    const secretMatches = detectSecrets(form.instructions + " " + form.description);
+    const secretMatches = detectSecrets(
+      createForm.instructions + " " + createForm.description,
+    );
     if (secretMatches.length > 0) {
-      setInstructionsWarning(
-        "Contains what looks like a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
+      setError(
+        "Instructions/description appear to contain a secret (" +
+        describeDetectedTypes(secretMatches) +
+        "). Remove it before saving.",
       );
+      api
+        .logAuditEvent({
+          type: "secret_detected_blocked",
+          agentId: selected?.id ?? null,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "instructions",
+            detectedTypes: secretMatches.map((m) => m.label).join(", "),
+          },
+        })
+        .catch(() => {
+          setError(
+            (prev) =>
+              (prev ?? "") + " (Note: audit log entry failed to record.)",
+          );
+        });
       return;
     }
     setInstructionsWarning(null);
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent(form);
+      const { agent } = await api.createAgent(createForm);
       await refreshAgents();
       setSelectedId(agent.id);
       setShowCreate(false);
-      setForm(emptyForm);
+      setCreateForm(emptyForm);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -179,20 +404,66 @@ export default function App() {
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
-    // Detect common api key patterns before creating agent.
-    const secretMatches = detectSecrets(form.instructions + " " + form.description);
+    const secretMatches = detectSecrets(
+      settingsForm.instructions + " " + settingsForm.description,
+    );
     if (secretMatches.length > 0) {
       setError(
         "Instructions/description appear to contain a secret (" +
         describeDetectedTypes(secretMatches) +
         "). Remove it before saving.",
       );
+      api
+        .logAuditEvent({
+          type: "secret_detected_blocked",
+          agentId: selected?.id ?? null,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "instructions",
+            detectedTypes: secretMatches.map((m) => m.label).join(", "),
+          },
+        })
+        .catch(() => {
+          setError(
+            (prev) =>
+              (prev ?? "") + " (Note: audit log entry failed to record.)",
+          );
+        });
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await api.updateAgent(selected.id, form);
+      await api.updateAgent(selected.id, {
+        name: settingsForm.name,
+        description: settingsForm.description,
+        instructions: settingsForm.instructions,
+        allowedScopes: settingsForm.allowedScopes,
+      });
+      await refreshAgents();
+      setShowSettings(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRevokeAgent = async () => {
+    if (!selected) return;
+    if (
+      !window.confirm(
+        "Immediately revoke all permissions for " +
+        selected.name +
+        "? All execution will be blocked.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeAgent(selected.id);
       await refreshAgents();
       setShowSettings(false);
     } catch (reason) {
@@ -273,6 +544,30 @@ export default function App() {
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
+
+    const isGlobalExceeded = isOverGlobalBudget(globalTokensUsed);
+    if (isGlobalExceeded && !allowOverGlobalBudget) {
+      setError(
+        "Session-wide budget of " + GLOBAL_TOKEN_BUDGET.toLocaleString() +
+        " tokens has been reached. Sending is blocked. Enable override to continue anyway.",
+      );
+      api.logAuditEvent({
+        type: "global_budget_exceeded_blocked",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
+      }).catch(() => { });
+      return;
+    }
+    if (isGlobalExceeded && allowOverGlobalBudget) {
+      api.logAuditEvent({
+        type: "global_budget_exceeded_override",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
+      }).catch(() => { });
+    }
+
     const content = prompt.trim();
     const secretMatches = detectSecrets(content);
     if (secretMatches.length > 0) {
@@ -281,8 +576,15 @@ export default function App() {
         describeDetectedTypes(secretMatches) +
         "). Remove it before sending.",
       );
+      api.logAuditEvent({
+        type: "secret_detected_blocked",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: { field: "message", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
+      }).catch(() => { });
       return;
     }
+
     setPrompt("");
     setError(null);
     try {
@@ -292,9 +594,7 @@ export default function App() {
         setActiveRun(result.run);
       }
       setAgents((current) =>
-        current.map((agent) =>
-          agent.id === selected.id ? { ...agent, status: "busy" } : agent,
-        ),
+        current.map((agent) => (agent.id === selected.id ? { ...agent, status: "busy" } : agent)),
       );
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
@@ -322,6 +622,29 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const rawLabel = await detectSensitivityLabel(file);
+    const level = rawLabel ? normalizeLabel(rawLabel) : null;
+    const blocked = isBlockedLevel(level, blockedLevels);
+
+    api.logAuditEvent({
+      type: blocked ? "file_upload_blocked" : "file_upload_allowed",
+      agentId: selected?.id ?? null,
+      timestamp: new Date().toISOString(),
+      detail: { fileName: file.name, detectedLabel: level ?? rawLabel ?? "none" },
+    }).catch(() => { });
+
+    if (blocked) {
+      setUploadWarning("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
+      return;
+    }
+    setUploadWarning(null);
   };
 
   if (authRequired === null) {
@@ -422,7 +745,7 @@ export default function App() {
         <button
           className="button button-primary create-button"
           onClick={() => {
-            setForm(emptyForm);
+            setCreateForm(emptyForm);
             setShowCreate(true);
           }}
         >
@@ -449,7 +772,11 @@ export default function App() {
                 <strong>{agent.name}</strong>
                 <span>{agent.description || "Coding Agent"}</span>
               </div>
-              <span className={"mini-dot mini-" + agent.status} />
+              <span
+                className={
+                  "mini-dot mini-" + (agent.isRevoked ? "error" : agent.status)
+                }
+              />
             </button>
           ))}
           {agents.length === 0 && (
@@ -471,6 +798,79 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {/* Loading style bar to show remaining tokens shared by all agents */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            marginBottom: 12,
+            width: "100%",
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+                color: "#4a5568",
+              }}
+            >
+              <span>Shared token pool</span>
+              <span>
+                {globalTokensUsed.toLocaleString()} / {GLOBAL_TOKEN_BUDGET.toLocaleString()}
+              </span>
+            </div>
+            <div
+              style={{
+                height: 6,
+                borderRadius: 4,
+                background: "#dde1e6",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: Math.min(100, (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100) + "%",
+                  background:
+                    globalTokensUsed / GLOBAL_TOKEN_BUDGET >= WARNING_THRESHOLD_RATIO ? "#dc2626" : "#4a5568",
+                  transition: "width 0.3s",
+                }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={haltAll}
+              style={{
+                background: "#dc2626",
+                color: "white",
+                border: 0,
+                borderRadius: 8,
+                padding: "8px 16px",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Halt All Agents
+            </button>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={allowOverGlobalBudget}
+                onChange={(event) => setAllowOverGlobalBudget(event.target.checked)}
+                style={{ width: 12, height: 12, margin: 0 }}
+              />
+              Override global budget
+            </label>
+          </div>
+        </div>
+
         {!system?.arkConfigured || !system?.codexAvailable ? (
           <div className="config-banner">
             <span>!</span>
@@ -487,49 +887,50 @@ export default function App() {
           </div>
         ) : null}
 
-        {error && (
-          <div className="error-banner" role="alert">
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>×</button>
-          </div>
-        )}
-
         {selected ? (
           <>
-            <header className="agent-header">
-              <div>
-                <div className="header-title-row">
-                  <h1>{selected.name}</h1>
-                  <StatusPill status={selected.status} />
+            <header className="agent-header" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", width: "100%" }}>
+                <div>
+                  <div className="header-title-row">
+                    <h1>{selected.name}</h1>
+                    <StatusPill status={selected.status} isRevoked={selected.isRevoked} />
+                  </div>
+                  <p>
+                    {selected.description || "A Codex coding Agent in an isolated workspace."}
+                  </p>
                 </div>
-                <p>
-                  {selected.description ||
-                    "A Codex coding Agent in an isolated workspace."}
-                </p>
+                <div className="header-actions">
+                  <button
+                    className="button button-ghost"
+                    onClick={() => setShowSettings((value) => !value)}
+                    disabled={busy || selected.status === "busy"}
+                  >
+                    Settings
+                  </button>
+                  <button
+                    className="button button-ghost"
+                    onClick={toggleAgent}
+                    disabled={busy || selected.isRevoked}
+                  >
+                    {selected.status === "stopped" ? "Start" : "Stop"}
+                  </button>
+                  <button
+                    className="button button-danger"
+                    onClick={deleteAgent}
+                    disabled={busy || selected.status === "busy"}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
-              <div className="header-actions">
-                <button
-                  className="button button-ghost"
-                  onClick={() => setShowSettings((value) => !value)}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Settings
-                </button>
-                <button
-                  className="button button-ghost"
-                  onClick={toggleAgent}
-                  disabled={busy}
-                >
-                  {selected.status === "stopped" ? "Start" : "Stop"}
-                </button>
-                <button
-                  className="button button-danger"
-                  onClick={deleteAgent}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Delete
-                </button>
-              </div>
+
+              {error && (
+                <div className="error-banner" role="alert" style={{ width: "100%" }}>
+                  <span>{error}</span>
+                  <button onClick={() => setError(null)}>×</button>
+                </div>
+              )}
             </header>
 
             {showSettings && (
@@ -537,7 +938,7 @@ export default function App() {
                 <div className="settings-title">
                   <div>
                     <span className="eyebrow">Agent configuration</span>
-                    <h2>Instructions and identity</h2>
+                    <h2>Instructions and Permissions</h2>
                   </div>
                   <button type="button" onClick={() => setShowSettings(false)}>
                     ×
@@ -547,9 +948,12 @@ export default function App() {
                   <label>
                     Name
                     <input
-                      value={form.name}
+                      value={settingsForm.name}
                       onChange={(event) =>
-                        setForm({ ...form, name: event.target.value })
+                        setSettingsForm({
+                          ...settingsForm,
+                          name: event.target.value,
+                        })
                       }
                       required
                       maxLength={80}
@@ -558,9 +962,12 @@ export default function App() {
                   <label>
                     Description
                     <input
-                      value={form.description}
+                      value={settingsForm.description}
                       onChange={(event) =>
-                        setForm({ ...form, description: event.target.value })
+                        setSettingsForm({
+                          ...settingsForm,
+                          description: event.target.value,
+                        })
                       }
                       maxLength={500}
                     />
@@ -569,16 +976,102 @@ export default function App() {
                 <label>
                   System instructions
                   <textarea
-                    value={form.instructions}
+                    value={settingsForm.instructions}
                     onChange={(event) =>
-                      setForm({ ...form, instructions: event.target.value })
+                      setSettingsForm({
+                        ...settingsForm,
+                        instructions: event.target.value,
+                      })
                     }
-                    rows={5}
+                    rows={4}
                     maxLength={10_000}
                   />
                 </label>
-                <div className="panel-footer">
-                  <code>{selected.workspacePath}</code>
+
+                {/* Delegated Permission Scopes */}
+                <div style={{ marginTop: "0.75rem", marginBottom: "0.75rem" }}>
+                  <span
+                    style={{
+                      fontSize: "0.875rem",
+                      color: "inherit",
+                      display: "block",
+                      marginBottom: "0.5rem",
+                    }}
+                  >
+                    Delegated Capabilities (Agent Permissions)
+                  </span>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "0.4rem",
+                    }}
+                  >
+                    {AVAILABLE_SCOPES.map((scope) => (
+                      <div
+                        key={scope.id}
+                        style={{
+                          display: "flex",
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                          cursor: "pointer",
+                          width: "fit-content",
+                        }}
+                        onClick={() => toggleSettingsScope(scope.id)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={settingsForm.allowedScopes.includes(
+                            scope.id,
+                          )}
+                          onChange={() => { }}
+                          style={{
+                            width: "16px",
+                            height: "16px",
+                            minWidth: "16px",
+                            margin: 0,
+                            cursor: "pointer",
+                            accentColor: "#6366f1",
+                          }}
+                        />
+                        <span
+                          style={{ fontSize: "0.875rem", color: "inherit" }}
+                        >
+                          {scope.label}{" "}
+                          <span style={{ opacity: 0.65, fontSize: "0.8rem" }}>
+                            ({scope.id})
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  className="panel-footer"
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="button button-danger"
+                    onClick={handleRevokeAgent}
+                    disabled={busy || selected.isRevoked}
+                    style={{
+                      background: selected.isRevoked ? "#52525b" : "#dc2626",
+                      color: "#ffffff",
+                      fontWeight: 600,
+                      cursor: selected.isRevoked ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {selected.isRevoked
+                      ? "Permissions Revoked"
+                      : "Revoke All Permissions"}
+                  </button>
                   <button className="button button-primary" disabled={busy}>
                     {busy ? <Spinner /> : "Save changes"}
                   </button>
@@ -630,7 +1123,10 @@ export default function App() {
                         </strong>
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
-                      <div className="message-body">{redactSecrets(message.content)}</div>                    </article>
+                      <div className="message-body">
+                        {redactSecrets(message.content)}
+                      </div>
+                    </article>
                   ))
                 )}
                 {activeRun &&
@@ -643,6 +1139,32 @@ export default function App() {
                       <div className="thinking-row">
                         <Spinner />
                         Codex is reading, editing, or running commands…
+                      </div>
+
+                      <div
+                        className="error-banner"
+                        style={{
+                          marginTop: 8,
+                          color: isNearingLimit(runElapsedMs, activeRun.usage)
+                            ? "#a13f3f"
+                            : "#4a5568",
+                          background: isNearingLimit(
+                            runElapsedMs,
+                            activeRun.usage,
+                          )
+                            ? "#fae8e6"
+                            : "#f1f3f5",
+                          border: isNearingLimit(runElapsedMs, activeRun.usage)
+                            ? "1px solid #edc4c0"
+                            : "1px solid #dde1e6",
+                        }}
+                      >
+                        <span>
+                          {formatDuration(runElapsedMs)} /{" "}
+                          {formatDuration(MAX_RUN_DURATION_MS)} ·{" "}
+                          {totalTokens(activeRun.usage).toLocaleString()} /{" "}
+                          {MAX_TOKEN_BUDGET.toLocaleString()} tokens
+                        </span>
                       </div>
                     </article>
                   )}
@@ -666,11 +1188,14 @@ export default function App() {
                     }
                   }}
                   placeholder={
-                    selected.status === "stopped"
-                      ? "Start this Agent to continue…"
-                      : "Describe what you want the Agent to do…"
+                    selected.isRevoked
+                      ? "Permissions permanently revoked for this Agent. Create a new Agent to continue."
+                      : selected.status === "stopped"
+                        ? "Start this Agent to continue…"
+                        : "Describe what you want the Agent to do…"
                   }
                   disabled={
+                    Boolean(selected.isRevoked) ||
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
                     (activeRun != null &&
@@ -683,9 +1208,19 @@ export default function App() {
                     Enter to send · Shift + Enter for newline ·{" "}
                     {system?.codexSandboxMode ?? "checking sandbox"}
                   </span>
+                  <label style={{ cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                    Add File
+                    <input
+                      type="file"
+                      accept=".docx,.pdf"
+                      onChange={handleFileSelected}
+                      style={{ display: "none" }}
+                    />
+                  </label>
                   <button
                     className="send-button"
                     disabled={
+                      Boolean(selected.isRevoked) ||
                       !prompt.trim() ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
@@ -712,7 +1247,7 @@ export default function App() {
             <button
               className="button button-primary"
               onClick={() => {
-                setForm(emptyForm);
+                setCreateForm(emptyForm);
                 setShowCreate(true);
               }}
             >
@@ -750,9 +1285,9 @@ export default function App() {
               <input
                 autoFocus
                 placeholder="Frontend Builder"
-                value={form.name}
+                value={createForm.name}
                 onChange={(event) =>
-                  setForm({ ...form, name: event.target.value })
+                  setCreateForm({ ...createForm, name: event.target.value })
                 }
                 required
                 maxLength={80}
@@ -762,9 +1297,12 @@ export default function App() {
               Description
               <input
                 placeholder="Builds polished React prototypes"
-                value={form.description}
+                value={createForm.description}
                 onChange={(event) =>
-                  setForm({ ...form, description: event.target.value })
+                  setCreateForm({
+                    ...createForm,
+                    description: event.target.value,
+                  })
                 }
                 maxLength={500}
               />
@@ -772,18 +1310,81 @@ export default function App() {
             <label>
               Instructions
               <textarea
-                value={form.instructions}
+                value={createForm.instructions}
                 onChange={(event) => {
-                  setForm({ ...form, instructions: event.target.value });
+                  setCreateForm({
+                    ...createForm,
+                    instructions: event.target.value,
+                  });
                   if (instructionsWarning) setInstructionsWarning(null);
-                }
-                }
-                rows={6}
+                }}
+                rows={4}
                 maxLength={10_000}
               />
             </label>
+
+            {/* Scope Selection at creation */}
+            <div style={{ marginTop: "0.5rem", marginBottom: "0.5rem" }}>
+              <span
+                style={{
+                  fontSize: "0.875rem",
+                  color: "inherit",
+                  display: "block",
+                  marginBottom: "0.5rem",
+                }}
+              >
+                Allowed Capabilities
+              </span>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.4rem",
+                }}
+              >
+                {AVAILABLE_SCOPES.map((scope) => (
+                  <div
+                    key={scope.id}
+                    style={{
+                      display: "flex",
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: "0.5rem",
+                      cursor: "pointer",
+                      width: "fit-content",
+                    }}
+                    onClick={() => toggleCreateScope(scope.id)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={createForm.allowedScopes.includes(scope.id)}
+                      onChange={() => { }}
+                      style={{
+                        width: "16px",
+                        height: "16px",
+                        minWidth: "16px",
+                        margin: 0,
+                        cursor: "pointer",
+                        accentColor: "#6366f1",
+                      }}
+                    />
+                    <span style={{ fontSize: "0.875rem", color: "inherit" }}>
+                      {scope.label}{" "}
+                      <span style={{ opacity: 0.65, fontSize: "0.8rem" }}>
+                        ({scope.id})
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {instructionsWarning && (
-              <div className="error-banner" role="alert" style={{ marginTop: 16 }}>
+              <div
+                className="error-banner"
+                role="alert"
+                style={{ marginTop: 16 }}
+              >
                 <span>{instructionsWarning}</span>
               </div>
             )}

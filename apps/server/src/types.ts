@@ -1,3 +1,11 @@
+export type AgentScope = "fs:read" | "fs:write" | "cmd:exec" | "net:outbound";
+
+export const DEFAULT_AGENT_SCOPES: AgentScope[] = [
+  "fs:read",
+  "fs:write",
+  "cmd:exec",
+];
+
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus =
   | "queued"
@@ -14,6 +22,8 @@ export interface Agent {
   instructions: string;
   status: AgentStatus;
   ownerId?: string;
+  allowedScopes: AgentScope[];
+  isRevoked?: boolean;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -61,12 +71,15 @@ export interface CreateAgentInput {
   description?: string | undefined;
   instructions?: string | undefined;
   ownerId?: string | undefined;
+  allowedScopes?: AgentScope[] | undefined;
 }
 
 export interface UpdateAgentInput {
   name?: string | undefined;
   description?: string | undefined;
   instructions?: string | undefined;
+  allowedScopes?: AgentScope[] | undefined;
+  isRevoked?: boolean | undefined;
 }
 
 export interface RunnerResult {
@@ -86,4 +99,22 @@ export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
+}
+
+export type AuditEventType =
+  | "secret_detected_blocked"
+  | "run_stopped_timeout"
+  | "run_stopped_token_budget"
+  | "run_stopped_manual"
+  | "run_stop_unconfirmed"
+  | "file_upload_blocked"
+  | "file_upload_allowed"
+  | "global_budget_exceeded_blocked"
+  | "global_budget_exceeded_override";
+
+export interface AuditEvent {
+  type: AuditEventType;
+  agentId: string | null;
+  timestamp: string;
+  detail: Record<string, string | number | boolean | null>;
 }
