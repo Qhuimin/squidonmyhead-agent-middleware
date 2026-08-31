@@ -74,10 +74,11 @@ flowchart TD
 | Identity & tenant-ownership middleware | [`apps/server/src/middleware/identity/`](apps/server/src/middleware/identity/) |
 | Threat, injection & secret-redaction middleware | [`apps/server/src/middleware/safety/`](apps/server/src/middleware/safety/) |
 | Policy & revocation engine | [`apps/server/src/agent-service.ts`](apps/server/src/agent-service.ts) |
-| Structured audit logging service | [`apps/server/src/services/audit-service.ts`](apps/server/src/services/audit-service.ts) |
-| Agent-policy tests | [`test/agent-policy.test.ts`](test/agent-policy.test.ts) |
-| User-ownership / tenant-isolation tests | [`test/user-ownership.test.ts`](test/user-ownership.test.ts) |
-| Human-approval boundary tests | [`test/approval-boundaries.test.ts`](test/approval-boundaries.test.ts) |
+| Structured audit logging service | [`apps/server/src/middleware/safety/audit-service.ts`](apps/server/src/middleware/safety/audit-service.ts) |
+| Agent capability & scope policy tests | [`apps/server/src/agent-policy.test.ts`](apps/server/src/agent-policy.test.ts) |
+| User-ownership & tenant-isolation tests | [`apps/server/src/user-ownership.test.ts`](apps/server/src/user-ownership.test.ts) |
+| Human approval gate tests | [`apps/server/src/approval-gate.test.ts`](apps/server/src/approval-gate.test.ts) |
+| Prompt injection & security tests | [`apps/server/src/agent-security-injection.test.ts`](apps/server/src/agent-security-injection.test.ts) |
 
 ## 4. Capabilities Built
 
@@ -129,7 +130,7 @@ Only one container engine is required.
 **2. Clone the repository**
 
 ```bash
-git clone <repository-url> volc-agent-launchpad
+git clone https://github.com/Qhuimin/squidonmyhead-agent-middleware volc-agent-launchpad
 cd volc-agent-launchpad
 ```
 
@@ -243,15 +244,22 @@ Run the full repository validation suite (TypeScript checks, tests, production b
 npm run check
 ```
 
+Run all test suites across the workspace:
+
+```bash
+npm test
+```
+
 Run Sentinel's middleware policy tests specifically:
 
 ```bash
-npm test -- test/agent-policy.test.ts
-npm test -- test/user-ownership.test.ts
-npm test -- test/approval-boundaries.test.ts
+npm test -- agent-policy.test.ts
+npm test -- user-ownership.test.ts
+npm test -- approval-gate.test.ts
+npm test -- agent-security-injection.test.ts
 ```
 
-Each suite exercises both the success path (allowed scope, approved action, same-user access) and the corresponding denial path (forbidden scope, denied approval, cross-user access, revoked Agent).
+Each test suite exercises both the success path (allowed capability scope, approved action, authorized owner access) and the corresponding failure/denial path (unauthorized scope, denied human approval, cross-tenant access violation, and prompt injection attempts).
 
 ## 8. Known Limitations
 
