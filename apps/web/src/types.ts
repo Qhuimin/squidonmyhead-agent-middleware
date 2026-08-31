@@ -1,5 +1,6 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus = "queued" | "pending_approval" | "running" | "completed" | "failed" | "cancelled" | "denied";
+export type ApprovalStatus = "pending" | "approved" | "denied";
 
 export interface Agent {
   id: string;
@@ -47,4 +48,18 @@ export interface SystemInfo {
   runtimeProvider: "local-process" | "container";
   containerEngine: string | null;
   runtime: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  runId: string;
+  agentId: string;
+  ownerId: string;
+  prompt: string;
+  reason: string;
+  matchedRuleId: string;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
 }

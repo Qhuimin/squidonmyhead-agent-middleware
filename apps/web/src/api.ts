@@ -1,5 +1,12 @@
 import { AuditEvent } from "../../server/src/types";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  ApprovalRequest,
+  ApprovalStatus,
+  Message,
+  SystemInfo,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -84,7 +91,7 @@ export const api = {
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   sendMessage: (id: string, content: string) =>
-    request<{ run: AgentRun; message: Message }>(
+    request<{ run: AgentRun; message: Message; approval?: ApprovalRequest }>(
       "/api/agents/" + id + "/messages",
       {
         method: "POST",
@@ -92,11 +99,21 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
-
+  listApprovals: (status?: ApprovalStatus) =>
+    request<{ approvals: ApprovalRequest[] }>(
+      "/api/approvals" + (status ? "?status=" + status : ""),
+    ),
+  decideApproval: (id: string, decision: "approved" | "denied") =>
+    request<{ approval: ApprovalRequest }>(
+      "/api/approvals/" + id + "/decision",
+      {
+        method: "POST",
+        body: JSON.stringify({ decision }),
+      },
+    ),
   logAuditEvent: (event: AuditEvent) =>
     request<{ ok: boolean }>("/api/audit", {
       method: "POST",
       body: JSON.stringify(event),
     }),
-
 };

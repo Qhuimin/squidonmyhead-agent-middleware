@@ -6,8 +6,18 @@ import {
   setActiveUserId,
   setAuthToken,
 } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
-import { describeDetectedTypes, detectSecrets, redactSecrets } from "../../server/src/middleware/safety/secret-detector";
+import type {
+  Agent,
+  AgentRun,
+  ApprovalRequest,
+  Message,
+  SystemInfo,
+} from "./types";
+import {
+  describeDetectedTypes,
+  detectSecrets,
+  redactSecrets,
+} from "../../server/src/middleware/safety/secret-detector";
 import {
   MAX_RUN_DURATION_MS,
   MAX_TOKEN_BUDGET,
@@ -79,9 +89,16 @@ export default function App() {
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
-  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(null);
+  const [instructionsWarning, setInstructionsWarning] = useState<string | null>(
+    null,
+  );
   const [runElapsedMs, setRunElapsedMs] = useState(0);
-  const [runTokenUsage, setRunTokenUsage] = useState<Record<string, number>>({});
+  const [runTokenUsage, setRunTokenUsage] = useState<Record<string, number>>(
+    {},
+  );
+  const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequest[]>(
+    [],
+  );
 
   selectedIdRef.current = selectedId;
 
@@ -107,6 +124,13 @@ export default function App() {
     }
   }, []);
 
+  const refreshApprovals = useCallback(async (agentId: string) => {
+    const { approvals } = await api.listApprovals("pending");
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setPendingApprovals(approvals.filter((a) => a.agentId === agentId));
+    }
+  }, []);
+
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
@@ -119,16 +143,20 @@ export default function App() {
       const results = await confirmStopAll(busyAgents.map((agent) => agent.id));
       await Promise.all(
         results.map((result) =>
-          api.logAuditEvent({
-            type: result.confirmed ? "run_stopped_manual" : "run_stop_unconfirmed",
-            agentId: result.agentId,
-            timestamp: new Date().toISOString(),
-            detail: {
-              trigger: "halt_all",
-              attempts: result.attempts,
-              lastError: result.lastError,
-            },
-          }).catch(() => { }),
+          api
+            .logAuditEvent({
+              type: result.confirmed
+                ? "run_stopped_manual"
+                : "run_stop_unconfirmed",
+              agentId: result.agentId,
+              timestamp: new Date().toISOString(),
+              detail: {
+                trigger: "halt_all",
+                attempts: result.attempts,
+                lastError: result.lastError,
+              },
+            })
+            .catch(() => {}),
         ),
       );
       const confirmed = results.filter((result) => result.confirmed);
@@ -136,12 +164,19 @@ export default function App() {
       await refreshAgents();
       setActiveRun(null);
       if (failed.length === 0) {
-        setError("Halted " + confirmed.length + " agent(s), confirmed stopped.");
+        setError(
+          "Halted " + confirmed.length + " agent(s), confirmed stopped.",
+        );
       } else {
         setError(
-          "Halted " + confirmed.length + " of " + results.length +
-          " agent(s). " + failed.length + " could not be confirmed stopped — check manually: " +
-          failed.map((f) => f.agentId).join(", "),
+          "Halted " +
+            confirmed.length +
+            " of " +
+            results.length +
+            " agent(s). " +
+            failed.length +
+            " could not be confirmed stopped — check manually: " +
+            failed.map((f) => f.agentId).join(", "),
         );
       }
     } finally {
@@ -178,7 +213,10 @@ export default function App() {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
-        if (latest && ["queued", "running"].includes(latest.status)) {
+        if (
+          latest &&
+          ["queued", "running", "pending_approval"].includes(latest.status)
+        ) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
           );
@@ -205,7 +243,8 @@ export default function App() {
 
   // Timer effect — ticks while a run is active, resets when it isn't, and auto-stops on timeout
   useEffect(() => {
-    const isActive = activeRun?.status === "queued" || activeRun?.status === "running";
+    const isActive =
+      activeRun?.status === "queued" || activeRun?.status === "running";
     if (!isActive || !activeRun) {
       setRunElapsedMs(0);
       return;
@@ -217,19 +256,32 @@ export default function App() {
       if (isOverDurationLimit(elapsed) && selected) {
         const agentId = selected.id;
         confirmStop(agentId).then((result) => {
-          api.logAuditEvent({
-            type: result.confirmed ? "run_stopped_timeout" : "run_stop_unconfirmed",
-            agentId,
-            timestamp: new Date().toISOString(),
-            detail: { elapsedMs: elapsed, limitMs: MAX_RUN_DURATION_MS, attempts: result.attempts, lastError: result.lastError },
-          }).catch(() => { });
+          api
+            .logAuditEvent({
+              type: result.confirmed
+                ? "run_stopped_timeout"
+                : "run_stop_unconfirmed",
+              agentId,
+              timestamp: new Date().toISOString(),
+              detail: {
+                elapsedMs: elapsed,
+                limitMs: MAX_RUN_DURATION_MS,
+                attempts: result.attempts,
+                lastError: result.lastError,
+              },
+            })
+            .catch(() => {});
           if (result.confirmed) {
-            setError("Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped.");
+            setError(
+              "Run exceeded the " +
+                formatDuration(MAX_RUN_DURATION_MS) +
+                " time limit and was stopped.",
+            );
           } else {
             setError(
               "Run exceeded the time limit, but the stop could not be confirmed (" +
-              (result.lastError ?? "unknown error") +
-              "). The agent may still be running — check manually.",
+                (result.lastError ?? "unknown error") +
+                "). The agent may still be running — check manually.",
             );
           }
           refreshAgents();
@@ -247,25 +299,33 @@ export default function App() {
       const agentId = selected.id;
       const usageAtTrigger = totalTokens(activeRun.usage);
       confirmStop(agentId).then((result) => {
-        api.logAuditEvent({
-          type: result.confirmed ? "run_stopped_token_budget" : "run_stop_unconfirmed",
-          agentId,
-          timestamp: new Date().toISOString(),
-          detail: {
-            tokensUsed: usageAtTrigger,
-            budgetLimit: MAX_TOKEN_BUDGET,
-            attempts: result.attempts,
-            lastError: result.lastError,
-          },
-        }).catch(() => { });
+        api
+          .logAuditEvent({
+            type: result.confirmed
+              ? "run_stopped_token_budget"
+              : "run_stop_unconfirmed",
+            agentId,
+            timestamp: new Date().toISOString(),
+            detail: {
+              tokensUsed: usageAtTrigger,
+              budgetLimit: MAX_TOKEN_BUDGET,
+              attempts: result.attempts,
+              lastError: result.lastError,
+            },
+          })
+          .catch(() => {});
 
         if (result.confirmed) {
-          setError("Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped.");
+          setError(
+            "Run exceeded the " +
+              MAX_TOKEN_BUDGET.toLocaleString() +
+              "-token budget and was stopped.",
+          );
         } else {
           setError(
             "Run exceeded the token budget, but the stop could not be confirmed (" +
-            (result.lastError ?? "unknown error") +
-            "). The agent may still be running — check manually.",
+              (result.lastError ?? "unknown error") +
+              "). The agent may still be running — check manually.",
           );
         }
         refreshAgents();
@@ -275,27 +335,45 @@ export default function App() {
 
   useEffect(() => {
     if (activeRun) {
-      setRunTokenUsage((prev) => ({ ...prev, [activeRun.id]: totalTokens(activeRun.usage) }));
+      setRunTokenUsage((prev) => ({
+        ...prev,
+        [activeRun.id]: totalTokens(activeRun.usage),
+      }));
     }
   }, [activeRun]);
 
-  const globalTokensUsed = Object.values(runTokenUsage).reduce((sum, n) => sum + n, 0);
+  const globalTokensUsed = Object.values(runTokenUsage).reduce(
+    (sum, n) => sum + n,
+    0,
+  );
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
-    const secretMatches = detectSecrets(form.instructions + " " + form.description);
+    const secretMatches = detectSecrets(
+      form.instructions + " " + form.description,
+    );
     if (secretMatches.length > 0) {
       setError(
-        "Instructions/description appear to contain a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
+        "Instructions/description appear to contain a secret (" +
+          describeDetectedTypes(secretMatches) +
+          "). Remove it before saving.",
       );
-      api.logAuditEvent({
-        type: "secret_detected_blocked",
-        agentId: selected?.id ?? null,
-        timestamp: new Date().toISOString(),
-        detail: { field: "instructions", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
-      }).catch(() => {
-        setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
-      });
+      api
+        .logAuditEvent({
+          type: "secret_detected_blocked",
+          agentId: selected?.id ?? null,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "instructions",
+            detectedTypes: secretMatches.map((m) => m.label).join(", "),
+          },
+        })
+        .catch(() => {
+          setError(
+            (prev) =>
+              (prev ?? "") + " (Note: audit log entry failed to record.)",
+          );
+        });
       return;
     }
     setInstructionsWarning(null);
@@ -318,19 +396,31 @@ export default function App() {
     event.preventDefault();
     if (!selected) return;
     // Detect common api key patterns before creating agent.
-    const secretMatches = detectSecrets(form.instructions + " " + form.description);
+    const secretMatches = detectSecrets(
+      form.instructions + " " + form.description,
+    );
     if (secretMatches.length > 0) {
       setError(
-        "Instructions/description appear to contain a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
+        "Instructions/description appear to contain a secret (" +
+          describeDetectedTypes(secretMatches) +
+          "). Remove it before saving.",
       );
-      api.logAuditEvent({
-        type: "secret_detected_blocked",
-        agentId: selected?.id ?? null,
-        timestamp: new Date().toISOString(),
-        detail: { field: "instructions", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
-      }).catch(() => {
-        setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
-      });
+      api
+        .logAuditEvent({
+          type: "secret_detected_blocked",
+          agentId: selected?.id ?? null,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "instructions",
+            detectedTypes: secretMatches.map((m) => m.label).join(", "),
+          },
+        })
+        .catch(() => {
+          setError(
+            (prev) =>
+              (prev ?? "") + " (Note: audit log entry failed to record.)",
+          );
+        });
       return;
     }
     setBusy(true);
@@ -357,6 +447,33 @@ export default function App() {
         await api.stopAgent(selected.id);
       }
       await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decideApproval = async (
+    approvalId: string,
+    decision: "approved" | "denied",
+  ) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.decideApproval(approvalId, decision);
+      setPendingApprovals((current) =>
+        current.filter((a) => a.id !== approvalId),
+      );
+      if (activeRun) {
+        const result = await api.run(activeRun.id);
+        setActiveRun(result.run);
+        if (["queued", "running"].includes(result.run.status) && selected) {
+          void pollRun(result.run.id, selected.id);
+        } else {
+          await Promise.all([refreshMessages(selected!.id), refreshAgents()]);
+        }
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -404,7 +521,12 @@ export default function App() {
         if (!mountedRef.current) return;
         const result = await api.run(runId);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        if (!["queued", "running"].includes(result.run.status)) {
+        if (result.run.status === "pending_approval") {
+          await refreshApprovals(agentId);
+        }
+        if (
+          !["queued", "running", "pending_approval"].includes(result.run.status)
+        ) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
         }
@@ -421,16 +543,26 @@ export default function App() {
     const secretMatches = detectSecrets(content);
     if (secretMatches.length > 0) {
       setError(
-        "Instructions/description appear to contain a secret (" + describeDetectedTypes(secretMatches) + "). Remove it before saving.",
+        "Instructions/description appear to contain a secret (" +
+          describeDetectedTypes(secretMatches) +
+          "). Remove it before saving.",
       );
-      api.logAuditEvent({
-        type: "secret_detected_blocked",
-        agentId: selected?.id ?? null,
-        timestamp: new Date().toISOString(),
-        detail: { field: "instructions", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
-      }).catch(() => {
-        setError((prev) => (prev ?? "") + " (Note: audit log entry failed to record.)");
-      });
+      api
+        .logAuditEvent({
+          type: "secret_detected_blocked",
+          agentId: selected?.id ?? null,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "instructions",
+            detectedTypes: secretMatches.map((m) => m.label).join(", "),
+          },
+        })
+        .catch(() => {
+          setError(
+            (prev) =>
+              (prev ?? "") + " (Note: audit log entry failed to record.)",
+          );
+        });
       return;
     }
     setPrompt("");
@@ -440,6 +572,9 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        if (result.run.status === "pending_approval") {
+          await refreshApprovals(selected.id);
+        }
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -621,20 +756,52 @@ export default function App() {
       </aside>
 
       <main className="main">
-
         {/* Loading style bar to show remaining tokens shared by all agents */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            marginBottom: 12,
+          }}
+        >
           <div style={{ flex: 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4, color: "#4a5568" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+                color: "#4a5568",
+              }}
+            >
               <span>Shared token pool</span>
-              <span>{globalTokensUsed.toLocaleString()} / {GLOBAL_TOKEN_BUDGET.toLocaleString()}</span>
+              <span>
+                {globalTokensUsed.toLocaleString()} /{" "}
+                {GLOBAL_TOKEN_BUDGET.toLocaleString()}
+              </span>
             </div>
-            <div style={{ height: 6, borderRadius: 4, background: "#dde1e6", overflow: "hidden" }}>
+            <div
+              style={{
+                height: 6,
+                borderRadius: 4,
+                background: "#dde1e6",
+                overflow: "hidden",
+              }}
+            >
               <div
                 style={{
                   height: "100%",
-                  width: Math.min(100, (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100) + "%",
-                  background: globalTokensUsed / GLOBAL_TOKEN_BUDGET >= WARNING_THRESHOLD_RATIO ? "#dc2626" : "#4a5568",
+                  width:
+                    Math.min(
+                      100,
+                      (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100,
+                    ) + "%",
+                  background:
+                    globalTokensUsed / GLOBAL_TOKEN_BUDGET >=
+                    WARNING_THRESHOLD_RATIO
+                      ? "#dc2626"
+                      : "#4a5568",
                   transition: "width 0.3s",
                 }}
               />
@@ -819,8 +986,73 @@ export default function App() {
                         </strong>
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
-                      <div className="message-body">{redactSecrets(message.content)}</div>                    </article>
+                      <div className="message-body">
+                        {redactSecrets(message.content)}
+                      </div>{" "}
+                    </article>
                   ))
+                )}
+                {activeRun?.status === "pending_approval" && (
+                  <article
+                    className="message message-assistant"
+                    style={{
+                      border: "1px solid #e0a83f",
+                      background: "#fff8e6",
+                      borderRadius: 8,
+                      padding: 16,
+                    }}
+                  >
+                    <div className="message-meta">
+                      <strong>⏸ Approval required</strong>
+                      <span>{formatTime(activeRun.createdAt)}</span>
+                    </div>
+                    {pendingApprovals
+                      .filter((a) => a.runId === activeRun.id)
+                      .map((approval) => (
+                        <div key={approval.id} style={{ marginTop: 8 }}>
+                          <p
+                            style={{
+                              margin: "4px 0",
+                              fontSize: "0.9rem",
+                              color: "#7a5a00",
+                            }}
+                          >
+                            <strong>{approval.reason}</strong>
+                          </p>
+                          <p
+                            style={{
+                              margin: "4px 0 12px",
+                              fontSize: "0.85rem",
+                              color: "#5a5a5a",
+                            }}
+                          >
+                            "{approval.prompt}"
+                          </p>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button
+                              type="button"
+                              className="button button-primary"
+                              disabled={busy}
+                              onClick={() =>
+                                decideApproval(approval.id, "approved")
+                              }
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-danger"
+                              disabled={busy}
+                              onClick={() =>
+                                decideApproval(approval.id, "denied")
+                              }
+                            >
+                              Deny
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </article>
                 )}
                 {activeRun &&
                   ["queued", "running"].includes(activeRun.status) && (
@@ -839,21 +1071,38 @@ export default function App() {
                         className="error-banner"
                         style={{
                           marginTop: 8,
-                          color: isNearingLimit(runElapsedMs, activeRun.usage) ? "#a13f3f" : "#4a5568",
-                          background: isNearingLimit(runElapsedMs, activeRun.usage) ? "#fae8e6" : "#f1f3f5",
-                          border: isNearingLimit(runElapsedMs, activeRun.usage) ? "1px solid #edc4c0" : "1px solid #dde1e6",
+                          color: isNearingLimit(runElapsedMs, activeRun.usage)
+                            ? "#a13f3f"
+                            : "#4a5568",
+                          background: isNearingLimit(
+                            runElapsedMs,
+                            activeRun.usage,
+                          )
+                            ? "#fae8e6"
+                            : "#f1f3f5",
+                          border: isNearingLimit(runElapsedMs, activeRun.usage)
+                            ? "1px solid #edc4c0"
+                            : "1px solid #dde1e6",
                         }}
                       >
                         <span>
-                          {formatDuration(runElapsedMs)} / {formatDuration(MAX_RUN_DURATION_MS)} · {totalTokens(activeRun.usage).toLocaleString()} / {MAX_TOKEN_BUDGET.toLocaleString()} tokens
+                          {formatDuration(runElapsedMs)} /{" "}
+                          {formatDuration(MAX_RUN_DURATION_MS)} ·{" "}
+                          {totalTokens(activeRun.usage).toLocaleString()} /{" "}
+                          {MAX_TOKEN_BUDGET.toLocaleString()} tokens
                         </span>
                       </div>
-
                     </article>
                   )}
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
+                    <span>{redactSecrets(activeRun.error ?? "")}</span>
+                  </article>
+                )}
+                {activeRun?.status === "denied" && (
+                  <article className="run-error">
+                    <strong>Run denied</strong>
                     <span>{redactSecrets(activeRun.error ?? "")}</span>
                   </article>
                 )}
@@ -879,7 +1128,9 @@ export default function App() {
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
                     (activeRun != null &&
-                      ["queued", "running"].includes(activeRun.status))
+                      ["queued", "running", "pending_approval"].includes(
+                        activeRun.status,
+                      ))
                   }
                   rows={3}
                 />
@@ -895,7 +1146,9 @@ export default function App() {
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
                       (activeRun != null &&
-                        ["queued", "running"].includes(activeRun.status))
+                        ["queued", "running", "pending_approval"].includes(
+                          activeRun.status,
+                        ))
                     }
                     aria-label="Send message"
                   >
@@ -981,14 +1234,17 @@ export default function App() {
                 onChange={(event) => {
                   setForm({ ...form, instructions: event.target.value });
                   if (instructionsWarning) setInstructionsWarning(null);
-                }
-                }
+                }}
                 rows={6}
                 maxLength={10_000}
               />
             </label>
             {instructionsWarning && (
-              <div className="error-banner" role="alert" style={{ marginTop: 16 }}>
+              <div
+                className="error-banner"
+                role="alert"
+                style={{ marginTop: 16 }}
+              >
                 <span>{instructionsWarning}</span>
               </div>
             )}
