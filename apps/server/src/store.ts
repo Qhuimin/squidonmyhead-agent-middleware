@@ -7,6 +7,7 @@ const emptyDatabase = (): Database => ({
   agents: [],
   messages: [],
   runs: [],
+  approvals: [],
 });
 
 export class JsonStore {
@@ -24,6 +25,10 @@ export class JsonStore {
         throw new Error("Unsupported database format");
       }
       this.data = parsed;
+      if (!Array.isArray(this.data.approvals)) {
+        this.data.approvals = [];
+        await this.persist();
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -36,7 +41,9 @@ export class JsonStore {
     return structuredClone(this.data);
   }
 
-  async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
+  async mutate<T>(
+    mutation: (database: Database) => T | Promise<T>,
+  ): Promise<T> {
     let result!: T;
     const operation = this.queue.then(async () => {
       const next = structuredClone(this.data);

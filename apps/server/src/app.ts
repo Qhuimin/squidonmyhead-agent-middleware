@@ -12,7 +12,11 @@ import {
   filterAgentsByOwner,
   assertAgentOwnership,
 } from "./middleware/identity/index.js";
-import { appendAuditLog, AUDIT_DATA_DIR, auditEventBody } from "./audit-service.js";
+import {
+  appendAuditLog,
+  AUDIT_DATA_DIR,
+  auditEventBody,
+} from "./audit-service.js";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -31,6 +35,10 @@ const updateAgentBody = createAgentBody
   );
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
+});
+const approvalIdParams = z.object({ id: z.string().uuid() });
+const approvalDecisionBody = z.object({
+  decision: z.enum(["approved", "denied"]),
 });
 
 export async function createApp(
@@ -221,18 +229,41 @@ export async function createApp(
   app.post("/api/audit", async (request, reply) => {
     const parseResult = auditEventBody.safeParse(request.body);
     if (!parseResult.success) {
-      return reply.status(400).send({ ok: false, error: "Invalid audit event shape" });
+      return reply
+        .status(400)
+        .send({ ok: false, error: "Invalid audit event shape" });
     }
     try {
       await appendAuditLog(parseResult.data);
       return reply.send({ ok: true });
     } catch (reason) {
-      return reply.status(500).send({ ok: false, error: "Failed to record audit event" });
+      return reply
+        .status(500)
+        .send({ ok: false, error: "Failed to record audit event" });
     }
   });
 
   app.addHook("onReady", async () => {
     await mkdir(AUDIT_DATA_DIR, { recursive: true });
+  });
+
+  app.get("/api/approvals", async (request) => {
+    const status = (request.query as any)?.status;
+    return { approvals: service.listApprovals(status) };
+  });
+
+  app.post("/api/approvals/:id/decision", async (request) => {
+    const user = extractUserContext(request);
+    const { id } = approvalIdParams.parse(request.params);
+
+    // Enforce: only the Agent's owner may decide its approvals.
+    const approval = service.listApprovals().find((a) => a.id === id);
+    if (!approval) throw new HttpError(404, "Approval request not found");
+    const agent = service.getAgent(approval.agentId);
+    assertAgentOwnership(agent, user.userId);
+
+    const body = approvalDecisionBody.parse(request.body);
+    return service.decideApproval(id, body.decision, user.userId);
   });
 
   return app;

@@ -7,12 +7,17 @@ import type {
   Agent,
   AgentRun,
   AgentRunner,
+  ApprovalRequest,
+  ApprovalStatus,
   CreateAgentInput,
   Message,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-
+import {
+  evaluateApprovalRequirement,
+  buildApprovalRequest,
+} from "./middleware/identity/approval-gate.js";
 const now = () => new Date().toISOString();
 
 export class AgentService {
@@ -163,19 +168,21 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
-  ): Promise<{ run: AgentRun; message: Message }> {
+  ): Promise<{ run: AgentRun; message: Message; approval?: ApprovalRequest }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
         503,
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
     }
+
+    const gate = evaluateApprovalRequirement(prompt);
     const timestamp = now();
     const runId = randomUUID();
     const run: AgentRun = {
       id: runId,
       agentId,
-      status: "queued",
+      status: gate.requiresApproval ? "pending_approval" : "queued",
       prompt,
       output: null,
       error: null,
@@ -192,6 +199,8 @@ export class AgentService {
       content: prompt,
       createdAt: timestamp,
     };
+
+    let approvalRequest: ApprovalRequest | undefined;
     const agentAtStart = await this.store.mutate((database) => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
@@ -205,12 +214,36 @@ export class AgentService {
       }
       database.runs.push(run);
       database.messages.push(message);
+
+      if (gate.requiresApproval && gate.rule) {
+        approvalRequest = buildApprovalRequest({
+          runId,
+          agentId,
+          ownerId: storedAgent.ownerId ?? "alice",
+          prompt,
+          rule: gate.rule,
+        });
+        database.approvals.push(approvalRequest);
+        // Agent stays "ready" — it's not executing, just waiting on a human.
+        const snapshot = structuredClone(storedAgent);
+        storedAgent.updatedAt = timestamp;
+        return snapshot;
+      }
+
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
+
+    if (gate.requiresApproval) {
+      // Run stays parked in "pending_approval"; nothing dispatched to the runner.
+      return approvalRequest
+        ? { run, message, approval: approvalRequest }
+        : { run, message };
+    }
+
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
     void execution
@@ -220,7 +253,74 @@ export class AgentService {
         }
       })
       .catch(() => undefined);
-    return { run, message };
+    return approvalRequest
+      ? { run, message, approval: approvalRequest }
+      : { run, message };
+  }
+
+  listApprovals(status?: ApprovalStatus): ApprovalRequest[] {
+    const all = this.store.snapshot().approvals;
+    return (status ? all.filter((a) => a.status === status) : all).sort(
+      (a, b) => b.requestedAt.localeCompare(a.requestedAt),
+    );
+  }
+
+  async decideApproval(
+    approvalId: string,
+    decision: "approved" | "denied",
+    decidedBy: string,
+  ): Promise<{ approval: ApprovalRequest }> {
+    const { approval, run, agent } = await this.store.mutate((database) => {
+      const approval = database.approvals.find((a) => a.id === approvalId);
+      if (!approval) throw new HttpError(404, "Approval request not found");
+      if (approval.status !== "pending")
+        throw new HttpError(409, `Approval already ${approval.status}`);
+
+      approval.status = decision;
+      approval.decidedBy = decidedBy;
+      approval.decidedAt = now();
+
+      const run = database.runs.find((r) => r.id === approval.runId);
+      const agent = database.agents.find((a) => a.id === approval.agentId);
+      if (!run || !agent) throw new HttpError(404, "Run or Agent not found");
+
+      if (decision === "denied") {
+        run.status = "denied";
+        run.error = `Denied by ${decidedBy}: ${approval.reason}`;
+        run.completedAt = now();
+        return { approval: structuredClone(approval), run: null, agent: null };
+      }
+
+      run.status = "queued";
+      if (agent.status === "busy") {
+        // Shouldn't happen since we never marked it busy, but guard anyway.
+        throw new HttpError(
+          409,
+          "Agent became busy while approval was pending",
+        );
+      }
+      agent.status = "busy";
+      agent.updatedAt = now();
+      return {
+        approval: structuredClone(approval),
+        run: structuredClone(run),
+        agent: structuredClone(agent),
+      };
+    });
+
+    if (decision === "approved" && run && agent) {
+      const execution = this.executeRun(agent, run);
+      this.activeExecutions.set(agent.id, execution);
+      void execution
+        .finally(() => {
+          if (this.activeExecutions.get(agent.id) === execution) {
+            this.activeExecutions.delete(agent.id);
+          }
+        })
+        .catch(() => undefined);
+    }
+
+    return { approval };
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {
