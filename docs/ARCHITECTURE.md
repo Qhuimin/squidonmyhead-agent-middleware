@@ -15,6 +15,9 @@ flowchart LR
     Process --> Ark
 ```
 
+Implementation:
+<img width="3920" height="1720" alt="Image" src="https://github.com/user-attachments/assets/3d1ce2b7-3973-428d-ad47-28edf0276032" />
+
 ## Components
 
 ### Web UI
