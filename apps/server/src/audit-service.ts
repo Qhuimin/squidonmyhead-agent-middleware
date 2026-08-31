@@ -7,6 +7,7 @@ export const AUDIT_LOG_PATH = path.join(AUDIT_DATA_DIR, "audit.jsonl");
 
 const KNOWN_AUDIT_EVENT_TYPES = [
   "secret_detected_blocked",
+  "injection_detected_blocked",
   "run_stopped_timeout",
   "run_stopped_token_budget",
   "run_stopped_manual",

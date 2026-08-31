@@ -1,13 +1,13 @@
 import { z } from "zod";
 
-import{
+import {
     DEFAULT_MAX_STEPS,
     DEFAULT_MAX_CALLS_PER_MINUTE,
     DEFAULT_PER_CALL_TIMEOUT_MS,
     TEST_ATTACK_PHRASES
 } from "./injection-constants.js"
 
-import{
+import {
     PromptInjectionFilter,
     OutputValidator,
     HITLRiskScorer,
@@ -37,7 +37,7 @@ export interface ExecutionContext {
     requestApproval: (req: ApprovalRequest) => Promise<boolean>;
 }
 
-export interface ApprovalRequest{
+export interface ApprovalRequest {
     toolName: string;
     risk: RiskTier;
     argsSummary: string;
@@ -49,7 +49,7 @@ export interface ApprovalRequest{
 export class ToolRegistry {
     private tools = new Map<string, ToolDefinition<any, any>>();
 
-    register(tool:ToolDefinition<any, any>){
+    register(tool: ToolDefinition<any, any>) {
         this.tools.set(tool.name, tool);
     }
 
@@ -189,6 +189,22 @@ export class SafeAgentExecutor {
 
 //
 
+export type PipelineBlockReason =
+    | "injection_input"
+    | "guardrail_input"
+    | "hitl_required"
+    | "guardrail_output";
+
+export interface PipelineResult {
+    /** true if the agent/model was never invoked (or its output was withheld) */
+    blocked: boolean;
+    blockReason?: PipelineBlockReason;
+    /** short, user-facing explanation, e.g. for a banner like the secret-detector one */
+    message: string;
+    /** only present when blocked is false */
+    response?: string;
+}
+
 export class SecureLLMPipeline {
     private inputFilter = new PromptInjectionFilter();
     private outputValidator = new OutputValidator();
@@ -199,19 +215,31 @@ export class SecureLLMPipeline {
         private readonly guardrail: Guardrail = new StubGuardrail()
     ) { }
 
-    async processRequest(userInput: string, systemPrompt: string): Promise<string> {
+    async processRequest(userInput: string, systemPrompt: string): Promise<PipelineResult> {
         const detection = this.inputFilter.detectInjection(userInput);
         if (detection.suspicious) {
-            return "I cannot process that request.";
+            return {
+                blocked: true,
+                blockReason: "injection_input",
+                message: "This message looks like a prompt injection attempt and was not sent to the agent.",
+            };
         }
 
         const inputVerdict = await this.guardrail.screenInput(userInput);
         if (!inputVerdict.allowed) {
-            return "I cannot process that request.";
+            return {
+                blocked: true,
+                blockReason: "guardrail_input",
+                message: "This message was blocked by a safety guardrail before reaching the agent.",
+            };
         }
 
         if (this.hitl.requiresApproval(userInput)) {
-            return "Request submitted for human review.";
+            return {
+                blocked: true,
+                blockReason: "hitl_required",
+                message: "This request needs human review before the agent can act on it.",
+            };
         }
 
         const cleanInput = this.inputFilter.sanitizeInput(userInput);
@@ -220,7 +248,14 @@ export class SecureLLMPipeline {
 
         const filtered = this.outputValidator.filterResponse(response);
         const outputVerdict = await this.guardrail.screenOutput(filtered);
-        return outputVerdict.allowed ? filtered : "I cannot provide that information for security reasons.";
+        if (!outputVerdict.allowed) {
+            return {
+                blocked: true,
+                blockReason: "guardrail_output",
+                message: "The agent's response was withheld for security reasons.",
+            };
+        }
+        return { blocked: false, message: "ok", response: filtered };
     }
 }
 
@@ -230,7 +265,7 @@ export async function runSecurityTestSuite(pipeline: SecureLLMPipeline): Promise
     let blocked = 0;
     for (const attack of TEST_ATTACK_PHRASES) {
         const result = await pipeline.processRequest(attack, "You are a helpful assistant.");
-        if (/cannot process|submitted for human review/i.test(result)) blocked++;
+        if (result.blocked) blocked++;
     }
     return blocked / TEST_ATTACK_PHRASES.length; // security score, 0..1
 }

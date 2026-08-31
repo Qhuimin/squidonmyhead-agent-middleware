@@ -114,6 +114,7 @@ export interface SystemInfo {
 
 export type AuditEventType =
   | "secret_detected_blocked"
+  | "injection_detected_blocked"
   | "run_stopped_timeout"
   | "run_stopped_token_budget"
   | "run_stopped_manual"

@@ -14,6 +14,9 @@ import {
   redactSecrets,
 } from "../../server/src/middleware/safety/secret-detector";
 import {
+    PromptInjectionFilter
+} from "../../server/src/middleware/safety/injection-detector";
+import {
   MAX_RUN_DURATION_MS,
   MAX_TOKEN_BUDGET,
   formatDuration,
@@ -56,6 +59,8 @@ const AVAILABLE_SCOPES: {
       description: "Run npm, tests, bash commands",
     },
   ];
+
+const injectionFilter = new PromptInjectionFilter();
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -583,6 +588,25 @@ export default function App() {
         detail: { field: "message", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
       }).catch(() => { });
       return;
+    }
+
+    const injectionScan = injectionFilter.detectInjection(content);
+    if (injectionScan.suspicious) {
+        setError(
+            "Message contains a prompt injection attempt. Remove any malicious instructions before trying again.",
+        );
+
+        api.logAuditEvent({
+            type: "injection_detected_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+                field: "message",
+                matchedPatterns: injectionScan.matchedPatterns.join(", "),
+                fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
+            },
+        }).catch(() => { });
+        return;
     }
 
     setPrompt("");
