@@ -14,7 +14,7 @@ import {
   redactSecrets,
 } from "../../server/src/middleware/safety/secret-detector";
 import {
-    PromptInjectionFilter
+  PromptInjectionFilter
 } from "../../server/src/middleware/safety/injection-detector";
 import {
   MAX_RUN_DURATION_MS,
@@ -662,21 +662,21 @@ export default function App() {
 
     const injectionScan = injectionFilter.detectInjection(content);
     if (injectionScan.suspicious) {
-        setError(
-            "Message contains a prompt injection attempt. Remove any malicious instructions before trying again.",
-        );
+      setError(
+        "Message contains a prompt injection attempt. Remove any malicious instructions before trying again.",
+      );
 
-        api.logAuditEvent({
-            type: "injection_detected_blocked",
-            agentId: selected.id,
-            timestamp: new Date().toISOString(),
-            detail: {
-                field: "message",
-                matchedPatterns: injectionScan.matchedPatterns.join(", "),
-                fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
-            },
-        }).catch(() => { });
-        return;
+      api.logAuditEvent({
+        type: "injection_detected_blocked",
+        agentId: selected.id,
+        timestamp: new Date().toISOString(),
+        detail: {
+          field: "message",
+          matchedPatterns: injectionScan.matchedPatterns.join(", "),
+          fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
+        },
+      }).catch(() => { });
+      return;
     }
 
     setPrompt("");
@@ -738,10 +738,8 @@ export default function App() {
     }).catch(() => { });
 
     if (blocked) {
-      setUploadWarning("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
-      return;
+      setError("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
     }
-    setUploadWarning(null);
   };
 
   if (authRequired === null) {
