@@ -9,11 +9,14 @@ export const DEFAULT_AGENT_SCOPES: AgentScope[] = [
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus =
   | "queued"
+  | "pending_approval"
   | "running"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "denied";
 export type MessageRole = "user" | "assistant";
+export type ApprovalStatus = "pending" | "approved" | "denied";
 
 export interface Agent {
   id: string;
@@ -115,6 +118,7 @@ export interface SystemInfo {
 export type AuditEventType =
   | "secret_detected_blocked"
   | "injection_detected_blocked"
+  | "output_secret_redacted"
   | "run_stopped_timeout"
   | "run_stopped_token_budget"
   | "run_stopped_manual"
@@ -129,4 +133,17 @@ export interface AuditEvent {
   agentId: string | null;
   timestamp: string;
   detail: Record<string, string | number | boolean | null>;
+}
+export interface ApprovalRequest {
+  id: string;
+  runId: string;
+  agentId: string;
+  ownerId: string;
+  prompt: string;
+  reason: string;
+  matchedRuleId: string;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
 }

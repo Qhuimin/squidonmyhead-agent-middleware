@@ -9,10 +9,14 @@ export const DEFAULT_AGENT_SCOPES: AgentScope[] = [
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus =
   | "queued"
+  | "pending_approval"
   | "running"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "denied";
+
+export type ApprovalStatus = "pending" | "approved" | "denied";
 export type MessageRole = "user" | "assistant";
 
 export interface Agent {
@@ -59,11 +63,26 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export interface ApprovalRequest {
+  id: string;
+  runId: string;
+  agentId: string;
+  ownerId: string;
+  prompt: string;          // stored for reviewer context; truncate if you redact
+  reason: string;           // which rule matched, human-readable
+  matchedRuleId: string;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+}
+
 export interface Database {
   version: 1;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  approvals: ApprovalRequest[];
 }
 
 export interface CreateAgentInput {
@@ -103,6 +122,7 @@ export interface AgentRunner {
 
 export type AuditEventType =
   | "secret_detected_blocked"
+  | "output_secret_redacted"
   | "run_stopped_timeout"
   | "run_stopped_token_budget"
   | "run_stopped_manual"
