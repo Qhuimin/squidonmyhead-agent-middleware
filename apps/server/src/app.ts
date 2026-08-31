@@ -77,6 +77,10 @@ const updateAgentBody = z
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const approvalIdParams = z.object({ id: z.string().uuid() });
+const approvalDecisionBody = z.object({
+  decision: z.enum(["approved", "denied"]),
+});
 
 export async function createApp(
   config: AppConfig,
@@ -296,6 +300,25 @@ export async function createApp(
 
   app.addHook("onReady", async () => {
     await mkdir(AUDIT_DATA_DIR, { recursive: true });
+  });
+
+  app.get("/api/approvals", async (request) => {
+    const status = (request.query as any)?.status;
+    return { approvals: service.listApprovals(status) };
+  });
+
+  app.post("/api/approvals/:id/decision", async (request) => {
+    const user = extractUserContext(request);
+    const { id } = approvalIdParams.parse(request.params);
+
+    // Enforce: only the Agent's owner may decide its approvals.
+    const approval = service.listApprovals().find((a) => a.id === id);
+    if (!approval) throw new HttpError(404, "Approval request not found");
+    const agent = service.getAgent(approval.agentId);
+    assertAgentOwnership(agent, user.userId);
+
+    const body = approvalDecisionBody.parse(request.body);
+    return service.decideApproval(id, body.decision, user.userId);
   });
 
   return app;

@@ -6,7 +6,7 @@ import {
   setActiveUserId,
   setAuthToken,
 } from "./api";
-import type { Agent, AgentRun, AgentScope, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, ApprovalRequest, AgentScope, Message, SystemInfo } from "./types";
 import { DEFAULT_AGENT_SCOPES } from "./types";
 import {
   describeDetectedTypes,
@@ -140,6 +140,10 @@ export default function App() {
   const [blockedLevels] = useState<SensitivityLevel[]>(DEFAULT_BLOCKED_LEVELS);
   const [allowOverGlobalBudget, setAllowOverGlobalBudget] = useState(false);
   const sessionStartTimeRef = useRef(new Date().toISOString());
+  const [pendingApprovals, setPendingApprovals] = useState<ApprovalRequest[]>(
+    [],
+  );
+
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -161,6 +165,13 @@ export default function App() {
     const result = await api.messages(agentId);
     if (mountedRef.current && selectedIdRef.current === agentId) {
       setMessages(result.messages);
+    }
+  }, []);
+
+  const refreshApprovals = useCallback(async (agentId: string) => {
+    const { approvals } = await api.listApprovals("pending");
+    if (mountedRef.current && selectedIdRef.current === agentId) {
+      setPendingApprovals(approvals.filter((a) => a.agentId === agentId));
     }
   }, []);
 
@@ -258,7 +269,10 @@ export default function App() {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
-        if (latest && ["queued", "running"].includes(latest.status)) {
+        if (
+          latest &&
+          ["queued", "running", "pending_approval"].includes(latest.status)
+        ) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
           );
@@ -286,6 +300,7 @@ export default function App() {
 
   useEffect(() => {
     if (!activeRun || !selected) return;
+    if (activeRun.status === "pending_approval") return;
     if (activeRun.createdAt < sessionStartTimeRef.current) return;
     if (stoppedRunIdsRef.current.has(activeRun.id)) return;
 
@@ -514,6 +529,33 @@ export default function App() {
     }
   };
 
+  const decideApproval = async (
+    approvalId: string,
+    decision: "approved" | "denied",
+  ) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.decideApproval(approvalId, decision);
+      setPendingApprovals((current) =>
+        current.filter((a) => a.id !== approvalId),
+      );
+      if (activeRun) {
+        const result = await api.run(activeRun.id);
+        setActiveRun(result.run);
+        if (["queued", "running"].includes(result.run.status) && selected) {
+          void pollRun(result.run.id, selected.id);
+        } else {
+          await Promise.all([refreshMessages(selected!.id), refreshAgents()]);
+        }
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleUserChange = async (nextUser: string) => {
     setCurrentUser(nextUser);
     setActiveUserId(nextUser);
@@ -554,7 +596,12 @@ export default function App() {
         if (!mountedRef.current) return;
         const result = await api.run(runId);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        if (!["queued", "running"].includes(result.run.status)) {
+        if (result.run.status === "pending_approval") {
+          await refreshApprovals(agentId);
+        }
+        if (
+          !["queued", "running", "pending_approval"].includes(result.run.status)
+        ) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
         }
@@ -615,6 +662,9 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        if (result.run.status === "pending_approval") {
+          await refreshApprovals(selected.id);
+        }
       }
       setAgents((current) =>
         current.map((agent) => (agent.id === selected.id ? { ...agent, status: "busy" } : agent)),
@@ -1152,6 +1202,68 @@ export default function App() {
                     </article>
                   ))
                 )}
+                {activeRun?.status === "pending_approval" && (
+                  <article
+                    className="message message-assistant"
+                    style={{
+                      border: "1px solid #e0a83f",
+                      background: "#fff8e6",
+                      borderRadius: 8,
+                      padding: 16,
+                    }}
+                  >
+                    <div className="message-meta">
+                      <strong>⏸ Approval required</strong>
+                      <span>{formatTime(activeRun.createdAt)}</span>
+                    </div>
+                    {pendingApprovals
+                      .filter((a) => a.runId === activeRun.id)
+                      .map((approval) => (
+                        <div key={approval.id} style={{ marginTop: 8 }}>
+                          <p
+                            style={{
+                              margin: "4px 0",
+                              fontSize: "0.9rem",
+                              color: "#7a5a00",
+                            }}
+                          >
+                            <strong>{approval.reason}</strong>
+                          </p>
+                          <p
+                            style={{
+                              margin: "4px 0 12px",
+                              fontSize: "0.85rem",
+                              color: "#5a5a5a",
+                            }}
+                          >
+                            "{approval.prompt}"
+                          </p>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button
+                              type="button"
+                              className="button button-primary"
+                              disabled={busy}
+                              onClick={() =>
+                                decideApproval(approval.id, "approved")
+                              }
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-danger"
+                              disabled={busy}
+                              onClick={() =>
+                                decideApproval(approval.id, "denied")
+                              }
+                            >
+                              Deny
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </article>
+                )}
                 {activeRun &&
                   ["queued", "running"].includes(activeRun.status) && (
                     <article className="message message-assistant thinking">
@@ -1197,6 +1309,12 @@ export default function App() {
                     <span>{redactSecrets(activeRun.error ?? "")}</span>
                   </article>
                 )}
+                {activeRun?.status === "denied" && (
+                  <article className="run-error">
+                    <strong>Run denied</strong>
+                    <span>{redactSecrets(activeRun.error ?? "")}</span>
+                  </article>
+                )}
                 <div ref={messageEnd} />
               </div>
 
@@ -1222,7 +1340,9 @@ export default function App() {
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
                     (activeRun != null &&
-                      ["queued", "running"].includes(activeRun.status))
+                      ["queued", "running", "pending_approval"].includes(
+                        activeRun.status,
+                      ))
                   }
                   rows={3}
                 />
@@ -1248,7 +1368,9 @@ export default function App() {
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
                       (activeRun != null &&
-                        ["queued", "running"].includes(activeRun.status))
+                        ["queued", "running", "pending_approval"].includes(
+                          activeRun.status,
+                        ))
                     }
                     aria-label="Send message"
                   >
