@@ -14,7 +14,7 @@ import {
   redactSecrets,
 } from "../../server/src/middleware/safety/secret-detector";
 import {
-  PromptInjectionFilter
+    PromptInjectionFilter
 } from "../../server/src/middleware/safety/injection-detector";
 import {
   MAX_RUN_DURATION_MS,
@@ -662,21 +662,21 @@ export default function App() {
 
     const injectionScan = injectionFilter.detectInjection(content);
     if (injectionScan.suspicious) {
-      setError(
-        "Message contains a prompt injection attempt. Remove any malicious instructions before trying again.",
-      );
+        setError(
+            "Message contains a prompt injection attempt. Remove any malicious instructions before trying again.",
+        );
 
-      api.logAuditEvent({
-        type: "injection_detected_blocked",
-        agentId: selected.id,
-        timestamp: new Date().toISOString(),
-        detail: {
-          field: "message",
-          matchedPatterns: injectionScan.matchedPatterns.join(", "),
-          fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
-        },
-      }).catch(() => { });
-      return;
+        api.logAuditEvent({
+            type: "injection_detected_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+                field: "message",
+                matchedPatterns: injectionScan.matchedPatterns.join(", "),
+                fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
+            },
+        }).catch(() => { });
+        return;
     }
 
     setPrompt("");
@@ -738,9 +738,30 @@ export default function App() {
     }).catch(() => { });
 
     if (blocked) {
-      setError("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
+      setUploadWarning("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
+      return;
     }
+    setUploadWarning(null);
   };
+
+  if (authRequired === null) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-card" aria-live="polite">
+          <div className="brand-mark">A</div>
+          <span className="eyebrow">Agent Launchpad</span>
+          <h1>Connecting to the control plane</h1>
+          {error ? (
+            <div className="error-banner" role="alert">
+              {error}
+            </div>
+          ) : (
+            <Spinner />
+          )}
+        </section>
+      </main>
+    );
+  }
 
   if (authRequired) {
     return (
