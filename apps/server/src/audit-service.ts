@@ -16,14 +16,22 @@ const KNOWN_AUDIT_EVENT_TYPES = [
   "file_upload_blocked",
   "file_upload_allowed",
   "global_budget_exceeded_blocked",
-  "global_budget_exceeded_override"
+  "global_budget_exceeded_override",
+  "user_ownership_blocked",
+  "agent_revocation_blocked",
+  "agent_scope_blocked",
 ] as const;
 
 export const auditEventBody = z.object({
   type: z.enum(KNOWN_AUDIT_EVENT_TYPES),
   agentId: z.string().nullable(),
   timestamp: z.string(),
-  detail: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  detail: z
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    )
+    .default({}),
 });
 
 export async function appendAuditLog(event: unknown): Promise<void> {

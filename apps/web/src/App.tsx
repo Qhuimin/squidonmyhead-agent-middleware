@@ -6,16 +6,21 @@ import {
   setActiveUserId,
   setAuthToken,
 } from "./api";
-import type { Agent, AgentRun, ApprovalRequest, AgentScope, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  ApprovalRequest,
+  AgentScope,
+  Message,
+  SystemInfo,
+} from "./types";
 import { DEFAULT_AGENT_SCOPES } from "./types";
 import {
   describeDetectedTypes,
   detectSecrets,
   redactSecrets,
 } from "../../server/src/middleware/safety/secret-detector";
-import {
-  PromptInjectionFilter
-} from "../../server/src/middleware/safety/injection-detector";
+import { PromptInjectionFilter } from "../../server/src/middleware/safety/injection-detector";
 import {
   MAX_RUN_DURATION_MS,
   MAX_TOKEN_BUDGET,
@@ -29,7 +34,12 @@ import {
   isOverGlobalBudget,
 } from "../../server/src/middleware/safety/run-limits";
 import { confirmStop, confirmStopAll } from "./confirm-stop";
-import { DEFAULT_BLOCKED_LEVELS, isBlockedLevel, normalizeLabel, SensitivityLevel } from "./safety/sensitivity-levels";
+import {
+  DEFAULT_BLOCKED_LEVELS,
+  isBlockedLevel,
+  normalizeLabel,
+  SensitivityLevel,
+} from "./safety/sensitivity-levels";
 import { detectSensitivityLabel } from "./safety/sensitivity-label";
 
 const MOCK_USERS = [
@@ -43,22 +53,22 @@ const AVAILABLE_SCOPES: {
   label: string;
   description: string;
 }[] = [
-    {
-      id: "fs:read",
-      label: "Read Workspace",
-      description: "Inspect files & folders",
-    },
-    {
-      id: "fs:write",
-      label: "Write Workspace",
-      description: "Create & edit files",
-    },
-    {
-      id: "cmd:exec",
-      label: "Execute Terminal",
-      description: "Run npm, tests, bash commands",
-    },
-  ];
+  {
+    id: "fs:read",
+    label: "Read Workspace",
+    description: "Inspect files & folders",
+  },
+  {
+    id: "fs:write",
+    label: "Write Workspace",
+    description: "Create & edit files",
+  },
+  {
+    id: "cmd:exec",
+    label: "Execute Terminal",
+    description: "Run npm, tests, bash commands",
+  },
+];
 
 const injectionFilter = new PromptInjectionFilter();
 
@@ -205,7 +215,7 @@ export default function App() {
                 lastError: result.lastError,
               },
             })
-            .catch(() => { }),
+            .catch(() => {}),
         ),
       );
       const confirmed = results.filter((result) => result.confirmed);
@@ -219,13 +229,13 @@ export default function App() {
       } else {
         setError(
           "Halted " +
-          confirmed.length +
-          " of " +
-          results.length +
-          " agent(s). " +
-          failed.length +
-          " could not be confirmed stopped — check manually: " +
-          failed.map((f) => f.agentId).join(", "),
+            confirmed.length +
+            " of " +
+            results.length +
+            " agent(s). " +
+            failed.length +
+            " could not be confirmed stopped — check manually: " +
+            failed.map((f) => f.agentId).join(", "),
         );
       }
     } finally {
@@ -233,15 +243,24 @@ export default function App() {
     }
   };
 
-  const logIfRedacted = (raw: string, agentId: string | null, source: "message" | "run_error") => {
+  const logIfRedacted = (
+    raw: string,
+    agentId: string | null,
+    source: "message" | "run_error",
+  ) => {
     const matches = detectSecrets(raw);
     if (matches.length === 0) return;
-    api.logAuditEvent({
-      type: "output_secret_redacted",
-      agentId,
-      timestamp: new Date().toISOString(),
-      detail: { source, detectedTypes: matches.map((m) => m.label).join(", ") },
-    }).catch(() => { });
+    api
+      .logAuditEvent({
+        type: "output_secret_redacted",
+        agentId,
+        timestamp: new Date().toISOString(),
+        detail: {
+          source,
+          detectedTypes: matches.map((m) => m.label).join(", "),
+        },
+      })
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -317,31 +336,41 @@ export default function App() {
     const agentId = selected.id;
 
     confirmStop(agentId).then((result) => {
-      api.logAuditEvent({
-        type: isDurationBreach
-          ? (result.confirmed ? "run_stopped_timeout" : "run_stop_unconfirmed")
-          : (result.confirmed ? "run_stopped_token_budget" : "run_stop_unconfirmed"),
-        agentId,
-        timestamp: new Date().toISOString(),
-        detail: {
-          elapsedMs: runElapsedMs,
-          tokensUsed: totalTokens(activeRun.usage),
-          attempts: result.attempts,
-          lastError: result.lastError,
-        },
-      }).catch(() => { });
+      api
+        .logAuditEvent({
+          type: isDurationBreach
+            ? result.confirmed
+              ? "run_stopped_timeout"
+              : "run_stop_unconfirmed"
+            : result.confirmed
+              ? "run_stopped_token_budget"
+              : "run_stop_unconfirmed",
+          agentId,
+          timestamp: new Date().toISOString(),
+          detail: {
+            elapsedMs: runElapsedMs,
+            tokensUsed: totalTokens(activeRun.usage),
+            attempts: result.attempts,
+            lastError: result.lastError,
+          },
+        })
+        .catch(() => {});
 
       if (result.confirmed) {
         setError(
           isDurationBreach
-            ? "Run exceeded the " + formatDuration(MAX_RUN_DURATION_MS) + " time limit and was stopped."
-            : "Run exceeded the " + MAX_TOKEN_BUDGET.toLocaleString() + "-token budget and was stopped.",
+            ? "Run exceeded the " +
+                formatDuration(MAX_RUN_DURATION_MS) +
+                " time limit and was stopped."
+            : "Run exceeded the " +
+                MAX_TOKEN_BUDGET.toLocaleString() +
+                "-token budget and was stopped.",
         );
       } else {
         setError(
           "Run exceeded a safety limit, but the stop could not be confirmed (" +
-          (result.lastError ?? "unknown error") +
-          "). The agent may still be running — check manually.",
+            (result.lastError ?? "unknown error") +
+            "). The agent may still be running — check manually.",
         );
       }
       refreshAgents();
@@ -407,8 +436,8 @@ export default function App() {
     if (secretMatches.length > 0) {
       setError(
         "Instructions/description appear to contain a secret (" +
-        describeDetectedTypes(secretMatches) +
-        "). Remove it before saving.",
+          describeDetectedTypes(secretMatches) +
+          "). Remove it before saving.",
       );
       api
         .logAuditEvent({
@@ -453,8 +482,8 @@ export default function App() {
     if (secretMatches.length > 0) {
       setError(
         "Instructions/description appear to contain a secret (" +
-        describeDetectedTypes(secretMatches) +
-        "). Remove it before saving.",
+          describeDetectedTypes(secretMatches) +
+          "). Remove it before saving.",
       );
       api
         .logAuditEvent({
@@ -486,6 +515,19 @@ export default function App() {
       await refreshAgents();
       setShowSettings(false);
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 403) {
+        api
+          .logAuditEvent({
+            type: "user_ownership_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+              attemptedBy: currentUser,
+              action: "update_agent",
+            },
+          })
+          .catch(() => {});
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
@@ -497,8 +539,8 @@ export default function App() {
     if (
       !window.confirm(
         "Immediately revoke all permissions for " +
-        selected.name +
-        "? All execution will be blocked.",
+          selected.name +
+          "? All execution will be blocked.",
       )
     ) {
       return;
@@ -507,9 +549,33 @@ export default function App() {
     setError(null);
     try {
       await api.revokeAgent(selected.id);
+      api
+        .logAuditEvent({
+          type: "agent_revocation_blocked",
+          agentId: selected.id,
+          timestamp: new Date().toISOString(),
+          detail: {
+            revokedBy: currentUser,
+            status: "permanently_revoked",
+          },
+        })
+        .catch(() => {});
       await refreshAgents();
       setShowSettings(false);
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 403) {
+        api
+          .logAuditEvent({
+            type: "user_ownership_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+              attemptedBy: currentUser,
+              action: "revoke_agent",
+            },
+          })
+          .catch(() => {});
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
@@ -528,6 +594,19 @@ export default function App() {
       }
       await refreshAgents();
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 403) {
+        api
+          .logAuditEvent({
+            type: "user_ownership_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+              attemptedBy: currentUser,
+              action: "toggle_agent",
+            },
+          })
+          .catch(() => {});
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
@@ -586,6 +665,19 @@ export default function App() {
       await api.deleteAgent(selected.id);
       await refreshAgents();
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 403) {
+        api
+          .logAuditEvent({
+            type: "user_ownership_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+              attemptedBy: currentUser,
+              action: "delete_agent",
+            },
+          })
+          .catch(() => {});
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
@@ -623,24 +715,29 @@ export default function App() {
     const isGlobalExceeded = isOverGlobalBudget(globalTokensUsed);
     if (isGlobalExceeded && !allowOverGlobalBudget) {
       setError(
-        "Session-wide budget of " + GLOBAL_TOKEN_BUDGET.toLocaleString() +
-        " tokens has been reached. Sending is blocked. Enable override to continue anyway.",
+        "Session-wide budget of " +
+          GLOBAL_TOKEN_BUDGET.toLocaleString() +
+          " tokens has been reached. Sending is blocked. Enable override to continue anyway.",
       );
-      api.logAuditEvent({
-        type: "global_budget_exceeded_blocked",
-        agentId: selected.id,
-        timestamp: new Date().toISOString(),
-        detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
-      }).catch(() => { });
+      api
+        .logAuditEvent({
+          type: "global_budget_exceeded_blocked",
+          agentId: selected.id,
+          timestamp: new Date().toISOString(),
+          detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
+        })
+        .catch(() => {});
       return;
     }
     if (isGlobalExceeded && allowOverGlobalBudget) {
-      api.logAuditEvent({
-        type: "global_budget_exceeded_override",
-        agentId: selected.id,
-        timestamp: new Date().toISOString(),
-        detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
-      }).catch(() => { });
+      api
+        .logAuditEvent({
+          type: "global_budget_exceeded_override",
+          agentId: selected.id,
+          timestamp: new Date().toISOString(),
+          detail: { globalTokensUsed, globalBudgetLimit: GLOBAL_TOKEN_BUDGET },
+        })
+        .catch(() => {});
     }
 
     const content = prompt.trim();
@@ -648,15 +745,20 @@ export default function App() {
     if (secretMatches.length > 0) {
       setError(
         "Message appears to contain a secret (" +
-        describeDetectedTypes(secretMatches) +
-        "). Remove it before sending.",
+          describeDetectedTypes(secretMatches) +
+          "). Remove it before sending.",
       );
-      api.logAuditEvent({
-        type: "secret_detected_blocked",
-        agentId: selected.id,
-        timestamp: new Date().toISOString(),
-        detail: { field: "message", detectedTypes: secretMatches.map((m) => m.label).join(", ") },
-      }).catch(() => { });
+      api
+        .logAuditEvent({
+          type: "secret_detected_blocked",
+          agentId: selected.id,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "message",
+            detectedTypes: secretMatches.map((m) => m.label).join(", "),
+          },
+        })
+        .catch(() => {});
       return;
     }
 
@@ -666,16 +768,18 @@ export default function App() {
         "Message contains a prompt injection attempt. Remove any malicious instructions before trying again.",
       );
 
-      api.logAuditEvent({
-        type: "injection_detected_blocked",
-        agentId: selected.id,
-        timestamp: new Date().toISOString(),
-        detail: {
-          field: "message",
-          matchedPatterns: injectionScan.matchedPatterns.join(", "),
-          fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
-        },
-      }).catch(() => { });
+      api
+        .logAuditEvent({
+          type: "injection_detected_blocked",
+          agentId: selected.id,
+          timestamp: new Date().toISOString(),
+          detail: {
+            field: "message",
+            matchedPatterns: injectionScan.matchedPatterns.join(", "),
+            fuzzyMatches: injectionScan.fuzzyMatches.join(", "),
+          },
+        })
+        .catch(() => {});
       return;
     }
 
@@ -691,10 +795,27 @@ export default function App() {
         }
       }
       setAgents((current) =>
-        current.map((agent) => (agent.id === selected.id ? { ...agent, status: "busy" } : agent)),
+        current.map((agent) =>
+          agent.id === selected.id ? { ...agent, status: "busy" } : agent,
+        ),
       );
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 403) {
+        api
+          .logAuditEvent({
+            type: selected.isRevoked
+              ? "agent_revocation_blocked"
+              : "agent_scope_blocked",
+            agentId: selected.id,
+            timestamp: new Date().toISOString(),
+            detail: {
+              attemptedBy: currentUser,
+              error: reason.message,
+            },
+          })
+          .catch(() => {});
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
       setActiveRun(null);
       await refreshAgents();
@@ -721,7 +842,9 @@ export default function App() {
     }
   };
 
-  const handleFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelected = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -730,15 +853,24 @@ export default function App() {
     const level = rawLabel ? normalizeLabel(rawLabel) : null;
     const blocked = isBlockedLevel(level, blockedLevels);
 
-    api.logAuditEvent({
-      type: blocked ? "file_upload_blocked" : "file_upload_allowed",
-      agentId: selected?.id ?? null,
-      timestamp: new Date().toISOString(),
-      detail: { fileName: file.name, detectedLabel: level ?? rawLabel ?? "none" },
-    }).catch(() => { });
+    api
+      .logAuditEvent({
+        type: blocked ? "file_upload_blocked" : "file_upload_allowed",
+        agentId: selected?.id ?? null,
+        timestamp: new Date().toISOString(),
+        detail: {
+          fileName: file.name,
+          detectedLabel: level ?? rawLabel ?? "none",
+        },
+      })
+      .catch(() => {});
 
     if (blocked) {
-      setError("This file is labeled \"" + (level ?? rawLabel) + "\" and cannot be uploaded.");
+      setError(
+        'This file is labeled "' +
+          (level ?? rawLabel) +
+          '" and cannot be uploaded.',
+      );
     }
   };
 
@@ -915,7 +1047,8 @@ export default function App() {
             >
               <span>Shared token pool</span>
               <span>
-                {globalTokensUsed.toLocaleString()} / {GLOBAL_TOKEN_BUDGET.toLocaleString()}
+                {globalTokensUsed.toLocaleString()} /{" "}
+                {GLOBAL_TOKEN_BUDGET.toLocaleString()}
               </span>
             </div>
             <div
@@ -929,16 +1062,31 @@ export default function App() {
               <div
                 style={{
                   height: "100%",
-                  width: Math.min(100, (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100) + "%",
+                  width:
+                    Math.min(
+                      100,
+                      (globalTokensUsed / GLOBAL_TOKEN_BUDGET) * 100,
+                    ) + "%",
                   background:
-                    globalTokensUsed / GLOBAL_TOKEN_BUDGET >= WARNING_THRESHOLD_RATIO ? "#dc2626" : "#4a5568",
+                    globalTokensUsed / GLOBAL_TOKEN_BUDGET >=
+                    WARNING_THRESHOLD_RATIO
+                      ? "#dc2626"
+                      : "#4a5568",
                   transition: "width 0.3s",
                 }}
               />
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-end",
+              gap: 6,
+              flexShrink: 0,
+            }}
+          >
             <button
               type="button"
               onClick={haltAll}
@@ -954,11 +1102,20 @@ export default function App() {
             >
               Halt All Agents
             </button>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+              }}
+            >
               <input
                 type="checkbox"
                 checked={allowOverGlobalBudget}
-                onChange={(event) => setAllowOverGlobalBudget(event.target.checked)}
+                onChange={(event) =>
+                  setAllowOverGlobalBudget(event.target.checked)
+                }
                 style={{ width: 12, height: 12, margin: 0 }}
               />
               Override global budget
@@ -984,15 +1141,29 @@ export default function App() {
 
         {selected ? (
           <>
-            <header className="agent-header" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", width: "100%" }}>
+            <header
+              className="agent-header"
+              style={{ display: "flex", flexDirection: "column", gap: 8 }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  width: "100%",
+                }}
+              >
                 <div>
                   <div className="header-title-row">
                     <h1>{selected.name}</h1>
-                    <StatusPill status={selected.status} isRevoked={selected.isRevoked} />
+                    <StatusPill
+                      status={selected.status}
+                      isRevoked={selected.isRevoked}
+                    />
                   </div>
                   <p>
-                    {selected.description || "A Codex coding Agent in an isolated workspace."}
+                    {selected.description ||
+                      "A Codex coding Agent in an isolated workspace."}
                   </p>
                 </div>
                 <div className="header-actions">
@@ -1021,7 +1192,11 @@ export default function App() {
               </div>
 
               {error && (
-                <div className="error-banner" role="alert" style={{ width: "100%" }}>
+                <div
+                  className="error-banner"
+                  role="alert"
+                  style={{ width: "100%" }}
+                >
                   <span>{error}</span>
                   <button onClick={() => setError(null)}>×</button>
                 </div>
@@ -1120,7 +1295,7 @@ export default function App() {
                           checked={settingsForm.allowedScopes.includes(
                             scope.id,
                           )}
-                          onChange={() => { }}
+                          onChange={() => {}}
                           style={{
                             width: "16px",
                             height: "16px",
@@ -1373,7 +1548,15 @@ export default function App() {
                     Enter to send · Shift + Enter for newline ·{" "}
                     {system?.codexSandboxMode ?? "checking sandbox"}
                   </span>
-                  <label style={{ cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                  <label
+                    style={{
+                      cursor: "pointer",
+                      fontSize: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
                     Add File
                     <input
                       type="file"
@@ -1525,7 +1708,7 @@ export default function App() {
                     <input
                       type="checkbox"
                       checked={createForm.allowedScopes.includes(scope.id)}
-                      onChange={() => { }}
+                      onChange={() => {}}
                       style={{
                         width: "16px",
                         height: "16px",

@@ -68,8 +68,8 @@ export interface ApprovalRequest {
   runId: string;
   agentId: string;
   ownerId: string;
-  prompt: string;          // stored for reviewer context; truncate if you redact
-  reason: string;           // which rule matched, human-readable
+  prompt: string; // stored for reviewer context; truncate if you redact
+  reason: string; // which rule matched, human-readable
   matchedRuleId: string;
   status: ApprovalStatus;
   requestedAt: string;
@@ -130,7 +130,10 @@ export type AuditEventType =
   | "file_upload_blocked"
   | "file_upload_allowed"
   | "global_budget_exceeded_blocked"
-  | "global_budget_exceeded_override";
+  | "global_budget_exceeded_override"
+  | "user_ownership_blocked"
+  | "agent_revocation_blocked"
+  | "agent_scope_blocked";
 
 export interface AuditEvent {
   type: AuditEventType;
