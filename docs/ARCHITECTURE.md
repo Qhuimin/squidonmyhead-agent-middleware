@@ -15,7 +15,7 @@ flowchart LR
     Process --> Ark
 ```
 
-Implementation:
+Our middleware Implementation:
 <img width="3920" height="1720" alt="Image" src="https://github.com/user-attachments/assets/3d1ce2b7-3973-428d-ad47-28edf0276032" />
 
 ## Components
@@ -51,6 +51,7 @@ data/launchpad.json       Agent, message, and Run metadata
 workspaces/AgentID/       Agent-created files
 workspaces/.deleted/      Archived deleted workspaces
 codex-home/               Codex configuration and sessions
+apps/server/src.data/audit.jsonl  For logging of endpoints
 ```
 
 `JsonStore` serializes writes and atomically replaces one JSON file. It supports
