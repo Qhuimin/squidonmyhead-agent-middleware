@@ -1,40 +1,55 @@
-import type { Agent } from "./types.js";
 import { api } from "./api.js";
+import type { Agent } from "./types.js";
 
-export interface StopResult {
-  agentId: string;
+export interface ConfirmStopResult {
   confirmed: boolean;
   attempts: number;
   lastError: string | null;
 }
 
-const MAX_STOP_ATTEMPTS = 2;
-
-function isStoppedStatus(agent: Agent | null | undefined): boolean {
-  return agent?.status === "stopped";
-}
-
-export async function confirmStop(agentId: string): Promise<StopResult> {
+export async function confirmStop(
+  agentId: string,
+  maxAttempts = 2
+): Promise<ConfirmStopResult> {
+  let attempts = 0;
   let lastError: string | null = null;
 
-  for (let attempt = 1; attempt <= MAX_STOP_ATTEMPTS; attempt += 1) {
+  while (attempts < maxAttempts) {
+    attempts++;
     try {
-      const result = await api.stopAgent(agentId);
-      if (isStoppedStatus(result.agent)) {
-        return { agentId, confirmed: true, attempts: attempt, lastError: null };
+      const response = await api.stopAgent(agentId);
+      const status = response.agent.status;
+
+      if (status === "stopped") {
+        return {
+          confirmed: true,
+          attempts,
+          lastError: null,
+        };
+      } else {
+        lastError = `Agent status is '${status}'`;
       }
-      lastError =
-        "Stop call succeeded but agent status is still " + result.agent.status;
-    } catch (reason) {
-      lastError = reason instanceof Error ? reason.message : String(reason);
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  return { agentId, confirmed: false, attempts: MAX_STOP_ATTEMPTS, lastError };
+  return {
+    confirmed: false,
+    attempts,
+    lastError,
+  };
 }
 
 export async function confirmStopAll(
-  agentIds: string[],
-): Promise<StopResult[]> {
-  return Promise.all(agentIds.map((agentId) => confirmStop(agentId)));
+  agentIds: string[]
+): Promise<ConfirmStopResult[]> {
+  const results: ConfirmStopResult[] = [];
+  
+  // Process sequentially to keep mock queues predictable and isolated per agent
+  for (const id of agentIds) {
+    results.push(await confirmStop(id));
+  }
+  
+  return results;
 }
